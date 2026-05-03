@@ -76,6 +76,7 @@ except ImportError:
 # Spaced Repetition integration
 try:
     from memster_spaced_repetition import schedule_review, get_due_reviews, predict_retention, auto_schedule_important, init_spaced_repetition
+    from memster_phase2 import PHASE2_TOOLS, init_phase2_features, call_phase2_tool
     SR_AVAILABLE = True
 except ImportError:
     SR_AVAILABLE = False
@@ -302,6 +303,11 @@ def init_database() -> None:
             logger.info(f"Spaced repetition schema initialized: {sr_init}")
         except Exception as e:
             logger.warning(f"SR init failed: {e}")
+    # Phase 2: trust + typed schemas + context optimizer
+    phase2 = init_phase2_features(conn)
+    if phase2.get('initialized'):
+        logger.info(f"Phase 2 features: {phase2}")
+
     logger.info(f"Database initialized at {DATABASE_PATH}")
 
 
@@ -2050,6 +2056,51 @@ TOOL_DEFINITIONS = [
         inputSchema={"type":"object","properties":{"limit":{"type":"integer","default":20},"tag":{"type":"string"}}}
     ),
     # End Spaced Repetition tools
+    Tool(
+        name="rate_memory_helpful",
+        description="Submit trust feedback for a memory: helpful (+0.05) or unhelpful (−0.10). Asymmetric scoring.",
+        inputSchema={"type":"object","properties":{"memory_id":{"type":"integer"},"helpful":{"type":"boolean"},"reason":{"type":"string"},"fronter_uid":{"type":"string"}},"required":["memory_id","helpful"]}
+    ),
+    Tool(
+        name="get_trust_stats",
+        description="Get aggregated trust statistics (per memory, per fronter, or global).",
+        inputSchema={"type":"object","properties":{"memory_id":{"type":"integer"},"fronter_uid":{"type":"string"},"limit":{"type":"integer","default":50}}}
+    ),
+    Tool(
+        name="set_memory_type",
+        description="Assign a typed schema to a memory (fact|belief|event|person|process|reference|note|conversation|observation).",
+        inputSchema={"type":"object","properties":{"memory_id":{"type":"integer"},"memory_type":{"type":"string","enum":["fact","belief","event","person","process","reference","note","conversation","observation"]},"type_data":{"type":"object"}},"required":["memory_id","memory_type"]}
+    ),
+    Tool(
+        name="get_memories_by_type",
+        description="List all memories of a given type.",
+        inputSchema={"type":"object","properties":{"memory_type":{"type":"string","enum":["fact","belief","event","person","process","reference","note","conversation","observation"]},"limit":{"type":"integer","default":20}},"required":["memory_type"]}
+    ),
+    Tool(
+        name="create_memory_link",
+        description="Create a typed hierarchical link between two memories (contains|references|equivalent_to).",
+        inputSchema={"type":"object","properties":{"parent_id":{"type":"integer"},"child_id":{"type":"integer"},"link_type":{"type":"string","enum":["contains","references","equivalent_to"],"default":"contains"}},"required":["parent_id","child_id"]}
+    ),
+    Tool(
+        name="get_memory_children",
+        description="Get all direct child memory IDs for a parent.",
+        inputSchema={"type":"object","properties":{"memory_id":{"type":"integer"},"link_type":{"type":"string","enum":["contains","references","equivalent_to"]}}}
+    ),
+    Tool(
+        name="get_memory_parents",
+        description="Get all direct parent memory IDs for a child.",
+        inputSchema={"type":"object","properties":{"memory_id":{"type":"integer"},"link_type":{"type":"string","enum":["contains","references","equivalent_to"]}}}
+    ),
+    Tool(
+        name="optimize_context",
+        description="Given a query and candidate memory IDs, select optimal subset fitting token budget using composite relevance scoring.",
+        inputSchema={"type":"object","properties":{"query":{"type":"string"},"candidate_ids":{"type":"array","items":{"type":"integer"}},"max_tokens":{"type":"integer","default":4000}},"required":["query","candidate_ids"]}
+    ),
+    Tool(
+        name="replay_events",
+        description="Replay memory event log (create/update/merge/delete/link).",
+        inputSchema={"type":"object","properties":{"memory_id":{"type":"integer"},"limit":{"type":"integer","default":100}}}
+    ),
 ] + (BEADS_TOOL_DEFINITIONS if BEADS_AVAILABLE else [])
 
 
@@ -4256,6 +4307,18 @@ if MCP_AVAILABLE:
             result = auto_schedule_important(DATABASE_PATH, int(args.get("limit", 20)), args.get("tag"))
             return [TextContent(type="text", text=json.dumps(result, default=str))]
 
+        elif name in (
+            "rate_memory_helpful",
+            "get_trust_stats",
+            "set_memory_type",
+            "get_memories_by_type",
+            "create_memory_link",
+            "get_memory_children",
+            "get_memory_parents",
+            "optimize_context",
+            "replay_events",
+        ):
+            result = call_phase2_tool(name, arguments)
         elif name == "compute_workspace_fingerprint":
             if not BEADS_AVAILABLE:
                 return [TextContent(type="text", text=json.dumps({"error": "beads features not loaded"}, indent=2))]
