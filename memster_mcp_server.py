@@ -17,13 +17,6 @@ from urllib import request, error
 # NVIDIA NIM Embeddings (frontier-quality 2048d vectors)
 EMBEDDINGS_AVAILABLE = False
 
-# Beads-inspired features (from github.com/gastownhall/beads)
-BEADS_AVAILABLE = False
-try:
-    from memster_beads import *
-    BEADS_AVAILABLE = True
-except ImportError as e:
-    BEADS_AVAILABLE = False
 try:
     from nvidia_nim_embeddings import (
         embed_text, embed_batch, store_embedding, get_embedding,
@@ -75,23 +68,12 @@ try:
     V4_AVAILABLE = True
 except ImportError:
     V4_AVAILABLE = False
-
-# Beads-inspired features (from github.com/gastownhall/beads)
-BEADS_AVAILABLE = False
-try:
-    from memster_beads import *
-    BEADS_AVAILABLE = True
-except ImportError as e:
-    BEADS_AVAILABLE = False
-    print("warning: v4 features not available", file=sys.stderr)
-# Beads feature module
 try:
     from memster_beads import *
     BEADS_AVAILABLE = True
 except ImportError:
     BEADS_AVAILABLE = False
     print("warning: beads features not available", file=sys.stderr)
-
 
 def init_database() -> None:
     """Initialize the SQLite database with required tables and indexes."""
@@ -3166,8 +3148,6 @@ if MCP_AVAILABLE:
             except Exception as e:
                 return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
 
-
-        # === Beads-inspired tool handlers ===
 
         # === Beads-inspired tool handlers ===
         elif name == "add_dependency":
