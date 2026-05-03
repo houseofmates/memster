@@ -85,13 +85,15 @@ def init_dependency_tables(db_path: str) -> None:
         ("expires_at", "TEXT"),
         ("gate_type", "TEXT"),  # none, confirm, timer, event
         ("gate_status", "TEXT DEFAULT \"open\""),  # open, pending, resolved, expired
-        ("hash_id", "TEXT UNIQUE"),  # short hash-based ID like bd-abc123
+        ("hash_id", "TEXT"),  # short hash-based ID like bd-abc123
     ]:
         try:
             c.execute(f"ALTER TABLE memories ADD COLUMN {col_def[0]} {col_def[1]}")
         except sqlite3.OperationalError:
             pass  # already exists
 
+    # Create unique index on hash_id after column is added
+    c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_memories_hash_id ON memories(hash_id)")
     conn.commit()
     conn.close()
 
@@ -508,7 +510,7 @@ try:
             }, "required": ["source_id", "target_id"]}
         ),
         Tool(
-            name="get_ready",
+            name="get_ready_memories",
             description="Get unblocked memories that need attention. Like beads bd ready - only shows items with no unresolved blockers.",
             inputSchema={"type": "object", "properties": {"limit": {"type": "integer", "default": 20}}}
         ),
