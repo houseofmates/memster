@@ -75,6 +75,14 @@ try:
     V4_AVAILABLE = True
 except ImportError:
     V4_AVAILABLE = False
+
+# Beads-inspired features (from github.com/gastownhall/beads)
+BEADS_AVAILABLE = False
+try:
+    from memster_beads import *
+    BEADS_AVAILABLE = True
+except ImportError as e:
+    BEADS_AVAILABLE = False
     print("warning: v4 features not available", file=sys.stderr)
 # Beads feature module
 try:
@@ -86,9 +94,6 @@ except ImportError:
 
 
 def init_database() -> None:
-    if BEADS_AVAILABLE:
-        beads_init = init_all_beads_features(DATABASE_PATH)
-        logger.info(f"beads features: {beads_init}")
     """Initialize the SQLite database with required tables and indexes."""
     os.makedirs(os.path.dirname(DATABASE_PATH), exist_ok=True)
 
@@ -275,6 +280,13 @@ def init_database() -> None:
         timestamp TIMESTAMP
     )""")
 
+    # Beads features initialization
+    if BEADS_AVAILABLE:
+        try:
+            beads_init = init_all_beads_features(DATABASE_PATH)
+            logger.info(f"beads features: {beads_init}")
+        except Exception as e:
+            logger.warning(f"Beads init failed: {e}")
     conn.commit()
     conn.close()
 
@@ -2016,7 +2028,7 @@ TOOL_DEFINITIONS = [
         description="Compute a fingerprint of the current workspace for change detection.",
         inputSchema={"type": "object", "properties": {}}
     ),
-]
+] + (BEADS_TOOL_DEFINITIONS if BEADS_AVAILABLE else [])
 
 
 if MCP_AVAILABLE:
@@ -3156,6 +3168,101 @@ if MCP_AVAILABLE:
 
 
         # === Beads-inspired tool handlers ===
+
+        # === Beads-inspired tool handlers ===
+        elif name == "add_dependency":
+            sid = int(args.get("source_id", 0))
+            tid = int(args.get("target_id", 0))
+            dt = args.get("dep_type", "related")
+            result = add_dependency(DATABASE_PATH, sid, tid, dt)
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+        elif name == "get_ready":
+            result = get_ready_memories(DATABASE_PATH, int(args.get("limit", 20)))
+            return [TextContent(type="text", text=json.dumps(result, default=str))]
+
+        elif name == "create_wisp":
+            if not BEADS_AVAILABLE:
+                return [TextContent(type="text", text=json.dumps({"error": "beads features not loaded"}, indent=2))]
+            content = arguments.get("content", "").strip()
+            if not content:
+                raise ValueError("content required")
+            category = arguments.get("category", "observation")
+            ttl_hours = int(arguments.get("ttl_hours", 24))
+            tags = arguments.get("tags", [])
+            result = create_wisp(DATABASE_PATH, content, category, ttl_hours, tags)
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+        elif name == "squash_wisp":
+            if not BEADS_AVAILABLE:
+                return [TextContent(type="text", text=json.dumps({"error": "beads features not loaded"}, indent=2))]
+            memory_id = arguments.get("memory_id")
+            if memory_id is None:
+                raise ValueError("memory_id required")
+            result = squash_wisp(DATABASE_PATH, memory_id)
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+        elif name == "burn_wisp":
+            if not BEADS_AVAILABLE:
+                return [TextContent(type="text", text=json.dumps({"error": "beads features not loaded"}, indent=2))]
+            memory_id = arguments.get("memory_id")
+            if memory_id is None:
+                raise ValueError("memory_id required")
+            result = burn_wisp(DATABASE_PATH, memory_id)
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+        elif name == "gc_wisps":
+            if not BEADS_AVAILABLE:
+                return [TextContent(type="text", text=json.dumps({"error": "beads features not loaded"}, indent=2))]
+            dry_run = bool(arguments.get("dry_run", True))
+            result = gc_wisps(DATABASE_PATH, dry_run)
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+        elif name == "compact_memory_ai":
+            if not BEADS_AVAILABLE:
+                return [TextContent(type="text", text=json.dumps({"error": "beads features not loaded"}, indent=2))]
+            memory_id = arguments.get("memory_id")
+            if memory_id is None:
+                raise ValueError("memory_id required")
+            model = arguments.get("model")
+            result = compact_memory_ai(DATABASE_PATH, memory_id, model)
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+        elif name == "set_memory_gate":
+            if not BEADS_AVAILABLE:
+                return [TextContent(type="text", text=json.dumps({"error": "beads features not loaded"}, indent=2))]
+            memory_id = arguments.get("memory_id")
+            if memory_id is None:
+                raise ValueError("memory_id required")
+            gate_type = arguments.get("gate_type", "confirm")
+            approvers = arguments.get("approvers", [])
+            result = set_memory_gate(DATABASE_PATH, memory_id, gate_type, approvers)
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+        elif name == "resolve_gate":
+            if not BEADS_AVAILABLE:
+                return [TextContent(type="text", text=json.dumps({"error": "beads features not loaded"}, indent=2))]
+            memory_id = arguments.get("memory_id")
+            if memory_id is None:
+                raise ValueError("memory_id required")
+            approved = bool(arguments.get("approved", True))
+            result = resolve_gate(DATABASE_PATH, memory_id, approved)
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+        elif name == "query_audit_log":
+            if not BEADS_AVAILABLE:
+                return [TextContent(type="text", text=json.dumps({"error": "beads features not loaded"}, indent=2))]
+            kind = arguments.get("kind")
+            since_hours = int(arguments.get("since_hours", 24))
+            limit = int(arguments.get("limit", 50))
+            result = query_audit_log(kind, since_hours, limit)
+            return [TextContent(type="text", text=json.dumps({"entries": result}, indent=2))]
+
+        elif name == "get_workspace_fingerprint":
+            if not BEADS_AVAILABLE:
+                return [TextContent(type="text", text=json.dumps({"error": "beads features not loaded"}, indent=2))]
+            result = {"fingerprint": compute_workspace_fingerprint()}
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
         elif name == "add_dependency":
             sid = int(args.get("source_id", 0))
             tid = int(args.get("target_id", 0))
