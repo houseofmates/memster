@@ -16,6 +16,14 @@ from urllib import request, error
 
 # NVIDIA NIM Embeddings (frontier-quality 2048d vectors)
 EMBEDDINGS_AVAILABLE = False
+
+# Beads-inspired features (from github.com/gastownhall/beads)
+BEADS_AVAILABLE = False
+try:
+    from memster_beads import *
+    BEADS_AVAILABLE = True
+except ImportError as e:
+    BEADS_AVAILABLE = False
 try:
     from nvidia_nim_embeddings import (
         embed_text, embed_batch, store_embedding, get_embedding,
@@ -68,8 +76,19 @@ try:
 except ImportError:
     V4_AVAILABLE = False
     print("warning: v4 features not available", file=sys.stderr)
+# Beads feature module
+try:
+    from memster_beads import *
+    BEADS_AVAILABLE = True
+except ImportError:
+    BEADS_AVAILABLE = False
+    print("warning: beads features not available", file=sys.stderr)
+
 
 def init_database() -> None:
+    if BEADS_AVAILABLE:
+        beads_init = init_all_beads_features(DATABASE_PATH)
+        logger.info(f"beads features: {beads_init}")
     """Initialize the SQLite database with required tables and indexes."""
     os.makedirs(os.path.dirname(DATABASE_PATH), exist_ok=True)
 
@@ -266,6 +285,14 @@ def init_database() -> None:
             logger.info(f"V4 schema upgrade: {upgrade_result}")
         except Exception as e:
             logger.warning(f"V4 schema upgrade failed: {e}")
+
+    # Beads schema integration
+    if BEADS_AVAILABLE:
+        try:
+            init_dependency_tables(DATABASE_PATH)
+            logger.info("Beads schema initialized (memory_dependencies, new memory columns)")
+        except Exception as e:
+            logger.warning(f"Beads schema init failed: {e}")
 
     logger.info(f"Database initialized at {DATABASE_PATH}")
 
@@ -1928,6 +1955,67 @@ TOOL_DEFINITIONS = [
             "limit": {"type": "integer", "default": 50}
         }}
     ),
+    # Beads features
+    Tool(
+        name="create_wisp",
+        description="Create an ephemeral wisp memory with optional TTL (hours) and tags. Wisps auto-expire.",
+        inputSchema={"type": "object", "properties": {"content": {"type": "string"}, "category": {"type": "string", "default": "observation"}, "ttl_hours": {"type": "integer", "default": 24}, "tags": {"type": "array", "items": {"type": "string"}}}, "required": ["content"]}
+    ),
+    Tool(
+        name="squash_wisp",
+        description="Compress a wisp memory into a regular memory and delete the wisp.",
+        inputSchema={"type": "object", "properties": {"memory_id": {"type": "integer"}}, "required": ["memory_id"]}
+    ),
+    Tool(
+        name="burn_wisp",
+        description="Immediately delete a wisp memory (mark as deleted).",
+        inputSchema={"type": "object", "properties": {"memory_id": {"type": "integer"}}, "required": ["memory_id"]}
+    ),
+    Tool(
+        name="gc_wisps",
+        description="Garbage-collect expired wisps (dry-run or actual deletion).",
+        inputSchema={"type": "object", "properties": {"dry_run": {"type": "boolean", "default": True}}}
+    ),
+    Tool(
+        name="compact_memory_ai",
+        description="AI-assisted memory compaction: summarize and consolidate a memory's content.",
+        inputSchema={"type": "object", "properties": {"memory_id": {"type": "integer"}, "model": {"type": "string"}}}
+    ),
+    Tool(
+        name="add_dependency",
+        description="Add a dependency edge between two memories (source -> target).",
+        inputSchema={"type": "object", "properties": {"source_id": {"type": "integer"}, "target_id": {"type": "integer"}, "dep_type": {"type": "string", "default": "related"}}}
+    ),
+    Tool(
+        name="get_ready_memories",
+        description="Get memories that are ready (unblocked) for processing, ordered by priority.",
+        inputSchema={"type": "object", "properties": {"limit": {"type": "integer", "default": 20}}}
+    ),
+    Tool(
+        name="audit_log",
+        description="Append an audit log entry for traceability.",
+        inputSchema={"type": "object", "properties": {"kind": {"type": "string"}, "data": {"type": "object"}, "actor": {"type": "string", "default": "hermes"}}}
+    ),
+    Tool(
+        name="query_audit_log",
+        description="Query the audit log for past actions.",
+        inputSchema={"type": "object", "properties": {"kind": {"type": "string"}, "since_hours": {"type": "integer", "default": 24}, "limit": {"type": "integer", "default": 50}}}
+    ),
+    Tool(
+        name="set_memory_gate",
+        description="Set a confirmation gate on a memory (e.g., require approval before certain actions).",
+        inputSchema={"type": "object", "properties": {"memory_id": {"type": "integer"}, "gate_type": {"type": "string", "default": "confirm"}, "approvers": {"type": "array", "items": {"type": "string"}}}}
+    ),
+    Tool(
+        name="resolve_gate",
+        description="Resolve a memory gate (approve or reject).",
+        inputSchema={"type": "object", "properties": {"memory_id": {"type": "integer"}, "approved": {"type": "boolean", "default": True}}}
+    ),
+    Tool(
+        name="compute_workspace_fingerprint",
+        description="Compute a fingerprint of the current workspace for change detection.",
+        inputSchema={"type": "object", "properties": {}}
+    ),
 ]
 
 
@@ -3066,6 +3154,54 @@ if MCP_AVAILABLE:
             except Exception as e:
                 return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
 
+
+        # === Beads-inspired tool handlers ===
+        elif name == "add_dependency":
+            sid = int(args.get("source_id", 0))
+            tid = int(args.get("target_id", 0))
+            dt = args.get("dep_type", "related")
+            result = add_dependency(DATABASE_PATH, sid, tid, dt)
+            return [TextContent(type="text", text=json.dumps(result))]
+
+        elif name == "get_ready":
+            result = get_ready_memories(DATABASE_PATH, int(args.get("limit", 20)))
+            return [TextContent(type="text", text=json.dumps(result, default=str))]
+
+        elif name == "create_wisp":
+            result = create_wisp(DATABASE_PATH, args["content"], args.get("category", "observation"), int(args.get("ttl_hours", 24)), args.get("tags", []))
+            return [TextContent(type="text", text=json.dumps(result))]
+
+        elif name == "squash_wisp":
+            result = squash_wisp(DATABASE_PATH, int(args["memory_id"]))
+            return [TextContent(type="text", text=json.dumps(result))]
+
+        elif name == "burn_wisp":
+            result = burn_wisp(DATABASE_PATH, int(args["memory_id"]))
+            return [TextContent(type="text", text=json.dumps(result))]
+
+        elif name == "gc_wisps":
+            result = gc_wisps(DATABASE_PATH, bool(args.get("dry_run", True)))
+            return [TextContent(type="text", text=json.dumps(result))]
+
+        elif name == "compact_memory_ai":
+            result = compact_memory_ai(DATABASE_PATH, int(args["memory_id"]), args.get("model"))
+            return [TextContent(type="text", text=json.dumps(result))]
+
+        elif name == "set_memory_gate":
+            result = set_memory_gate(DATABASE_PATH, int(args["memory_id"]), args.get("gate_type", "confirm"), args.get("approvers", []))
+            return [TextContent(type="text", text=json.dumps(result))]
+
+        elif name == "resolve_gate":
+            result = resolve_gate(DATABASE_PATH, int(args["memory_id"]), bool(args.get("approved", True)))
+            return [TextContent(type="text", text=json.dumps(result))]
+
+        elif name == "query_audit_log":
+            result = query_audit_log(args.get("kind"), int(args.get("since_hours", 24)), int(args.get("limit", 50)))
+            return [TextContent(type="text", text=json.dumps(result, default=str))]
+
+        elif name == "get_workspace_fingerprint":
+            result = {"fingerprint": compute_workspace_fingerprint()}
+            return [TextContent(type="text", text=json.dumps(result))]
         elif name == "compress_memory":
             try:
                 memory_id = arguments.get("memory_id")
@@ -3828,6 +3964,154 @@ if MCP_AVAILABLE:
                 return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
 
 
+
+        elif name == "create_wisp":
+            if not BEADS_AVAILABLE:
+                return [TextContent(type="text", text=json.dumps({"error": "beads features not loaded"}, indent=2))]
+            try:
+                content = arguments.get("content", "").strip()
+                if not content:
+                    raise ValueError("content required")
+                category = arguments.get("category", "observation")
+                ttl_hours = arguments.get("ttl_hours", 24)
+                tags = arguments.get("tags", [])
+                result = create_wisp(DB_PATH, content, category, ttl_hours, tags)
+                return [TextContent(type="text", text=json.dumps(result, indent=2))]
+            except Exception as e:
+                return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
+
+        elif name == "squash_wisp":
+            if not BEADS_AVAILABLE:
+                return [TextContent(type="text", text=json.dumps({"error": "beads features not loaded"}, indent=2))]
+            try:
+                memory_id = arguments.get("memory_id")
+                if memory_id is None:
+                    raise ValueError("memory_id required")
+                result = squash_wisp(DB_PATH, memory_id)
+                return [TextContent(type="text", text=json.dumps(result, indent=2))]
+            except Exception as e:
+                return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
+
+        elif name == "burn_wisp":
+            if not BEADS_AVAILABLE:
+                return [TextContent(type="text", text=json.dumps({"error": "beads features not loaded"}, indent=2))]
+            try:
+                memory_id = arguments.get("memory_id")
+                if memory_id is None:
+                    raise ValueError("memory_id required")
+                result = burn_wisp(DB_PATH, memory_id)
+                return [TextContent(type="text", text=json.dumps(result, indent=2))]
+            except Exception as e:
+                return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
+
+        elif name == "gc_wisps":
+            if not BEADS_AVAILABLE:
+                return [TextContent(type="text", text=json.dumps({"error": "beads features not loaded"}, indent=2))]
+            try:
+                dry_run = arguments.get("dry_run", True)
+                result = gc_wisps(DB_PATH, dry_run=dry_run)
+                return [TextContent(type="text", text=json.dumps(result, indent=2))]
+            except Exception as e:
+                return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
+
+        elif name == "compact_memory_ai":
+            if not BEADS_AVAILABLE:
+                return [TextContent(type="text", text=json.dumps({"error": "beads features not loaded"}, indent=2))]
+            try:
+                memory_id = arguments.get("memory_id")
+                if memory_id is None:
+                    raise ValueError("memory_id required")
+                model = arguments.get("model")
+                result = compact_memory_ai(DB_PATH, memory_id, model)
+                return [TextContent(type="text", text=json.dumps(result, indent=2))]
+            except Exception as e:
+                return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
+
+        elif name == "add_dependency":
+            if not BEADS_AVAILABLE:
+                return [TextContent(type="text", text=json.dumps({"error": "beads features not loaded"}, indent=2))]
+            try:
+                source_id = arguments.get("source_id")
+                target_id = arguments.get("target_id")
+                if source_id is None or target_id is None:
+                    raise ValueError("source_id and target_id required")
+                dep_type = arguments.get("dep_type", "related")
+                result = add_dependency(DB_PATH, source_id, target_id, dep_type)
+                return [TextContent(type="text", text=json.dumps(result, indent=2))]
+            except Exception as e:
+                return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
+
+        elif name == "get_ready_memories":
+            if not BEADS_AVAILABLE:
+                return [TextContent(type="text", text=json.dumps({"error": "beads features not loaded"}, indent=2))]
+            try:
+                limit = arguments.get("limit", 20)
+                result = get_ready_memories(DB_PATH, limit)
+                return [TextContent(type="text", text=json.dumps({"memories": result}, indent=2))]
+            except Exception as e:
+                return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
+
+        elif name == "audit_log":
+            if not BEADS_AVAILABLE:
+                return [TextContent(type="text", text=json.dumps({"error": "beads features not loaded"}, indent=2))]
+            try:
+                kind = arguments.get("kind")
+                if not kind:
+                    raise ValueError("kind required")
+                data = arguments.get("data")
+                actor = arguments.get("actor", "hermes")
+                entry_path = audit_log(kind, data, actor)
+                return [TextContent(type="text", text=json.dumps({"logged": True, "path": entry_path}, indent=2))]
+            except Exception as e:
+                return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
+
+        elif name == "query_audit_log":
+            if not BEADS_AVAILABLE:
+                return [TextContent(type="text", text=json.dumps({"error": "beads features not loaded"}, indent=2))]
+            try:
+                kind = arguments.get("kind")
+                since_hours = arguments.get("since_hours", 24)
+                limit = arguments.get("limit", 50)
+                result = query_audit_log(kind, since_hours, limit)
+                return [TextContent(type="text", text=json.dumps({"entries": result}, indent=2))]
+            except Exception as e:
+                return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
+
+        elif name == "set_memory_gate":
+            if not BEADS_AVAILABLE:
+                return [TextContent(type="text", text=json.dumps({"error": "beads features not loaded"}, indent=2))]
+            try:
+                memory_id = arguments.get("memory_id")
+                if memory_id is None:
+                    raise ValueError("memory_id required")
+                gate_type = arguments.get("gate_type", "confirm")
+                approvers = arguments.get("approvers")
+                result = set_memory_gate(DB_PATH, memory_id, gate_type, approvers)
+                return [TextContent(type="text", text=json.dumps(result, indent=2))]
+            except Exception as e:
+                return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
+
+        elif name == "resolve_gate":
+            if not BEADS_AVAILABLE:
+                return [TextContent(type="text", text=json.dumps({"error": "beads features not loaded"}, indent=2))]
+            try:
+                memory_id = arguments.get("memory_id")
+                if memory_id is None:
+                    raise ValueError("memory_id required")
+                approved = arguments.get("approved", True)
+                result = resolve_gate(DB_PATH, memory_id, approved)
+                return [TextContent(type="text", text=json.dumps(result, indent=2))]
+            except Exception as e:
+                return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
+
+        elif name == "compute_workspace_fingerprint":
+            if not BEADS_AVAILABLE:
+                return [TextContent(type="text", text=json.dumps({"error": "beads features not loaded"}, indent=2))]
+            try:
+                result = compute_workspace_fingerprint()
+                return [TextContent(type="text", text=json.dumps({"fingerprint": result}, indent=2))]
+            except Exception as e:
+                return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
         else:
             raise ValueError(f"Unknown tool: {name}")
 
