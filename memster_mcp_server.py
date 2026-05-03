@@ -73,7 +73,13 @@ try:
     BEADS_AVAILABLE = True
 except ImportError:
     BEADS_AVAILABLE = False
-    print("warning: beads features not available", file=sys.stderr)
+# Spaced Repetition integration
+try:
+    from memster_spaced_repetition import schedule_review, get_due_reviews, predict_retention, auto_schedule_important, init_spaced_repetition
+    SR_AVAILABLE = True
+except ImportError:
+    SR_AVAILABLE = False
+    print("warning: spaced repetition features not available", file=sys.stderr)
 
 def init_database() -> None:
     """Initialize the SQLite database with required tables and indexes."""
@@ -288,6 +294,14 @@ def init_database() -> None:
         except Exception as e:
             logger.warning(f"Beads schema init failed: {e}")
 
+
+    # Spaced Repetition schema initialization
+    if SR_AVAILABLE:
+        try:
+            sr_init = init_spaced_repetition()
+            logger.info(f"Spaced repetition schema initialized: {sr_init}")
+        except Exception as e:
+            logger.warning(f"SR init failed: {e}")
     logger.info(f"Database initialized at {DATABASE_PATH}")
 
 
@@ -2010,6 +2024,32 @@ TOOL_DEFINITIONS = [
         description="Compute a fingerprint of the current workspace for change detection.",
         inputSchema={"type": "object", "properties": {}}
     ),
+    Tool(
+        name="schedule_review",
+        description="Schedule next review for a memory using SM-2++ algorithm.",
+        inputSchema={"type":"object","properties":{"memory_id":{"type":"integer"},"quality":{"type":"integer","minimum":0,"maximum":5,"default":3}},"required":["memory_id"]}
+    ),
+    Tool(
+        name="get_due_reviews",
+        description="Get memories due for review within N days.",
+        inputSchema={"type":"object","properties":{"days":{"type":"integer","default":7},"tag":{"type":"string"}}}
+    ),
+    Tool(
+        name="batch_review",
+        description="Batch mark memories as reviewed.",
+        inputSchema={"type":"object","properties":{"reviews":{"type":"array","items":{"type":"object","properties":{"memory_id":{"type":"integer"},"quality":{"type":"integer","minimum":0,"maximum":5,"default":3}}}}} ,"required":["reviews"]}
+    ),
+    Tool(
+        name="predict_retention",
+        description="Predict long-term retention probability at given days.",
+        inputSchema={"type":"object","properties":{"memory_id":{"type":"integer"},"days":{"type":"integer","default":30}},"required":["memory_id"]}
+    ),
+    Tool(
+        name="auto_schedule_important",
+        description="Schedule reviews for important memories lacking review schedules.",
+        inputSchema={"type":"object","properties":{"limit":{"type":"integer","default":20},"tag":{"type":"string"}}}
+    ),
+    # End Spaced Repetition tools
 ] + (BEADS_TOOL_DEFINITIONS if BEADS_AVAILABLE else [])
 
 
@@ -4190,6 +4230,31 @@ if MCP_AVAILABLE:
                 return [TextContent(type="text", text=json.dumps(result, indent=2))]
             except Exception as e:
                 return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
+
+    # ================================
+        # ================================
+        # Spaced Repetition tool handlers
+        # ================================
+        elif name == "schedule_review":
+            result = schedule_review(DATABASE_PATH, int(args["memory_id"]), int(args.get("quality", 3)))
+            return [TextContent(type="text", text=json.dumps(result))]
+
+        elif name == "get_due_reviews":
+            result = get_due_reviews(DATABASE_PATH, int(args.get("days", 7)), args.get("tag"))
+            return [TextContent(type="text", text=json.dumps(result, default=str))]
+
+        elif name == "batch_review":
+            reviews = json.loads(args.get("reviews", "[]"))
+            results = [schedule_review(DATABASE_PATH, int(r["memory_id"]), int(r.get("quality", 3))) for r in reviews]
+            return [TextContent(type="text", text=json.dumps(results, default=str))]
+
+        elif name == "predict_retention":
+            result = predict_retention(DATABASE_PATH, int(args["memory_id"]), int(args.get("days", 30)))
+            return [TextContent(type="text", text=json.dumps(result))]
+
+        elif name == "auto_schedule_important":
+            result = auto_schedule_important(DATABASE_PATH, int(args.get("limit", 20)), args.get("tag"))
+            return [TextContent(type="text", text=json.dumps(result, default=str))]
 
         elif name == "compute_workspace_fingerprint":
             if not BEADS_AVAILABLE:
