@@ -15,9 +15,9 @@ pg_env/
 venv/
 .venv/
 
-# Environment secrets
+# Secrets
 .env
-.env.*
+!.env.example
 
 # OS / editor junk
 .DS_Store
