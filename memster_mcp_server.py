@@ -30,7 +30,9 @@ except ImportError as e:
     EMBEDDINGS_AVAILABLE = False
 
 # Configuration
-DATABASE_PATH = os.path.expanduser("~/memster/memster_unified.db")
+# Database path — overridable via MEMSTER_DB_PATH env var
+_DB_ENV = os.environ.get("MEMSTER_DB_PATH", "")
+DATABASE_PATH = os.path.expanduser(_DB_ENV) if _DB_ENV else os.path.expanduser("~/memster/memster_unified.db")
 DB_PATH = DATABASE_PATH
 MEMSTER_DIR = os.path.expanduser("~/memster")
 PIECES_MCP_URL = "http://localhost:39310/model_context_protocol/2025-03-26/mcp"

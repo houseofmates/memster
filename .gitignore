@@ -1,0 +1,38 @@
+# Private local data — never commit
+memster_unified.db
+memster_core.db
+*.db
+*.sqlite
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+pg_env/
+venv/
+.venv/
+
+# Environment secrets
+.env
+.env.*
+
+# OS / editor junk
+.DS_Store
+*.log
+*.swp
+*.swo
+.vscode/
+.idea/
+
+# Temporary / backup
+*~
+*.bak
+*.tmp
+
+# Test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
