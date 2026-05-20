@@ -95,6 +95,6 @@ we welcome contributions! please read [contributing.md](contributing.md) for det
 
 <h2 align="center">license</h2>
 
-this project is licensed under the mates license — see the [license](license) file for details.
+[the mates license](license)
 
 built by [house of mates](https://github.com/houseofmates).
