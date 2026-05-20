@@ -515,7 +515,7 @@ def gbrain_get_communities(args: Dict[str, Any]) -> List[Dict]:
         from networkx.algorithms.community import label_propagation_communities
         comms = list(label_propagation_communities(G))
         comm_map = {}
-        for i, comm in enumerate(comps):
+        for i, comm in enumerate(comms):
             for node in comm:
                 comm_map[node] = i
 

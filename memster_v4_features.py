@@ -27,7 +27,7 @@ def get_db(db_path: str = None):
 
 def bayesian_update(memory_id: int, observation_result: bool, db_path: str = None) -> Dict:
     """Bayesian confidence update. Confirm: P *= 1.2 (cap 1.0). Contradict: P *= 0.6 (floor 0.0)."""
-    conn = get_db()
+    conn = get_db(db_path)
     c = conn.cursor()
 
     c.execute("SELECT confidence_score, observation_log FROM memories WHERE id = ?", (memory_id,))
@@ -62,7 +62,7 @@ def bayesian_update(memory_id: int, observation_result: bool, db_path: str = Non
 
 def score_memory_confidence_v4(memory_id: int, db_path: str = None) -> Dict:
     """Multi-signal confidence scoring for a memory."""
-    conn = get_db()
+    conn = get_db(db_path)
     c = conn.cursor()
 
     c.execute("""SELECT id, content, category, network_type, importance, decay_score,
@@ -145,7 +145,7 @@ def score_memory_confidence_v4(memory_id: int, db_path: str = None) -> Dict:
 
 NEGATION_WORDS = {"not", "no", "never", "isn't", "aren't", "wasn't", "weren't",
                   "doesn't", "don't", "didn't", "won't", "wouldn't", "can't",
-                  "cannot", "shouldn't", "never", "neither", "nor", "nothing", "nowhere"}
+                  "cannot", "shouldn't", "neither", "nor", "nothing", "nowhere"}
 
 ANTONYM_PAIRS = [
     ("enable", "disable"), ("start", "stop"), ("up", "down"), ("left", "right"),
@@ -233,7 +233,7 @@ def _check_pair_contradiction(text_a: str, text_b: str) -> Optional[Dict]:
 def detect_contradictions_v4(threshold: float = 0.5, db_path: str = None) -> Dict:
     """Detect contradictory memory pairs."""
 
-    conn = get_db()
+    conn = get_db(db_path)
     c = conn.cursor()
 
     # Get memories grouped by category for efficient comparison
@@ -283,7 +283,7 @@ def auto_link_memory(memory_id: int, content: str, category: str,
                      db_path: str = None) -> Dict:
     """Auto-create edges when a new memory is stored."""
 
-    conn = get_db()
+    conn = get_db(db_path)
     c = conn.cursor()
     edges_created = 0
 
@@ -372,7 +372,7 @@ def assemble_context_packet_v4(query: str = "", max_tokens: int = 2000,
                                 context_type: str = "auto", db_path: str = None) -> Dict:
     """Assemble a token-budgeted context packet with diversity injection."""
 
-    conn = get_db()
+    conn = get_db(db_path)
     c = conn.cursor()
 
     # Step 1: Get candidate memories
@@ -486,7 +486,7 @@ def assemble_context_packet_v4(query: str = "", max_tokens: int = 2000,
 def detect_stale_memories_v4(db_path: str = None) -> Dict:
     """Find memories that may be outdated using multiple heuristics."""
 
-    conn = get_db()
+    conn = get_db(db_path)
     c = conn.cursor()
 
     now = datetime.now().isoformat()
@@ -541,7 +541,7 @@ def compress_old_memories(db_path: str = None, days_threshold: int = 60,
                           min_group_size: int = 3) -> Dict:
     """Compress groups of old unused memories into summaries."""
 
-    conn = get_db()
+    conn = get_db(db_path)
     c = conn.cursor()
 
     cutoff = (datetime.now() - timedelta(days=days_threshold)).isoformat()
@@ -822,7 +822,7 @@ def wiki_to_memster_sync_v4(max_pages: int = 20, db_path: str = None) -> Dict:
     if not os.path.isdir(WIKI_DIR):
         return {"synced": 0, "error": "wiki directory not found"}
 
-    conn = get_db()
+    conn = get_db(db_path)
     c = conn.cursor()
     synced = 0
 
@@ -869,7 +869,7 @@ def wiki_to_memster_sync_v4(max_pages: int = 20, db_path: str = None) -> Dict:
 def memster_to_wiki_sync_v4(min_memories: int = 3, db_path: str = None) -> Dict:
     """When 3+ memories reference same topic, generate wiki page draft."""
 
-    conn = get_db()
+    conn = get_db(db_path)
     c = conn.cursor()
 
     # Find entity clusters (entities mentioned in 3+ memories)
@@ -924,7 +924,7 @@ def memster_to_wiki_sync_v4(min_memories: int = 3, db_path: str = None) -> Dict:
 def composed_search_v4(query: Dict, db_path: str = None) -> Dict:
     """Execute a structured composable search query."""
 
-    conn = get_db()
+    conn = get_db(db_path)
     c = conn.cursor()
 
     where_clauses = []
@@ -1023,7 +1023,7 @@ def composed_search_v4(query: Dict, db_path: str = None) -> Dict:
 def reinforce_memory(memory_id: int, db_path: str = None) -> Dict:
     """Reinforce a memory by resetting its decay score (on access)."""
 
-    conn = get_db()
+    conn = get_db(db_path)
     c = conn.cursor()
 
     c.execute("SELECT decay_score FROM memories WHERE id = ?", (memory_id,))
@@ -1052,7 +1052,7 @@ def reinforce_memory(memory_id: int, db_path: str = None) -> Dict:
 def pin_memory(memory_id: int, pin: bool = True, db_path: str = None) -> Dict:
     """Pin or unpin a memory. Pinned memories never decay."""
 
-    conn = get_db()
+    conn = get_db(db_path)
     c = conn.cursor()
     c.execute("UPDATE memories SET pinned = ? WHERE id = ?", (1 if pin else 0, memory_id))
     conn.commit()
@@ -1065,7 +1065,7 @@ def graceful_forget_step(db_path: str = None, decay_rate: float = 0.02,
                          compress_threshold: float = 0.1) -> Dict:
     """One step of graceful forgetting: decay, trace, compress, then clean."""
 
-    conn = get_db()
+    conn = get_db(db_path)
     c = conn.cursor()
 
     now = datetime.now().isoformat()
@@ -1131,7 +1131,7 @@ def graceful_forget_step(db_path: str = None, decay_rate: float = 0.02,
 def run_dream_cycle_v4(db_path: str = None, intensity: str = "normal") -> Dict:
     """Run a dream cycle for offline consolidation and pattern discovery."""
 
-    conn = get_db()
+    conn = get_db(db_path)
     c = conn.cursor()
 
     now = datetime.now().isoformat()
@@ -1278,7 +1278,7 @@ def normalize_text_v4(text: str) -> str:
 def check_proactive_v4(context: str, max_suggestions: int = 3, db_path: str = None) -> Dict:
     """Check if there are relevant past memories for current context."""
 
-    conn = get_db()
+    conn = get_db(db_path)
     c = conn.cursor()
 
     suggestions = []
@@ -1341,7 +1341,7 @@ def check_proactive_v4(context: str, max_suggestions: int = 3, db_path: str = No
 def build_graph_edges_v4(db_path: str = None) -> Dict:
     """Rebuild memory graph edges from entity overlaps."""
 
-    conn = get_db()
+    conn = get_db(db_path)
     c = conn.cursor()
 
     # Clear existing auto-generated edges
@@ -1378,7 +1378,7 @@ def build_graph_edges_v4(db_path: str = None) -> Dict:
 def find_duplicates_v4(similarity_threshold: float = 0.8, db_path: str = None) -> Dict:
     """Find duplicate or near-duplicate memories."""
 
-    conn = get_db()
+    conn = get_db(db_path)
     c = conn.cursor()
 
     c.execute("SELECT id, content, category FROM memories ORDER BY id")
@@ -1424,7 +1424,7 @@ def find_duplicates_v4(similarity_threshold: float = 0.8, db_path: str = None) -
 def filter_passive_capture_v4(dry_run: bool = True, db_path: str = None) -> Dict:
     """Clean up passive capture noise from clipboard/screenshot sources."""
 
-    conn = get_db()
+    conn = get_db(db_path)
     c = conn.cursor()
 
     noise_patterns = [
@@ -1485,7 +1485,7 @@ def extract_graph_relations_v4(memory_id: int, content: str = None,
     """Extract semantic graph relations from memory content."""
 
     if not content:
-        conn = get_db()
+        conn = get_db(db_path)
         c = conn.cursor()
         c.execute("SELECT content FROM memories WHERE id = ?", (memory_id,))
         row = c.fetchone()
@@ -1533,7 +1533,7 @@ def extract_graph_relations_v4(memory_id: int, content: str = None,
 def upgrade_database_v4(db_path: str = None) -> Dict:
     """Add V4 schema: new columns, new tables."""
 
-    conn = get_db()
+    conn = get_db(db_path)
     c = conn.cursor()
     upgrades = []
 
@@ -1717,9 +1717,9 @@ def upgrade_database_v4(db_path: str = None) -> Dict:
 # Additional V4 handler functions (referenced by main server)
 # ============================================================
 
-def compress_memory_v4(memory_id: int) -> dict:
+def compress_memory_v4(memory_id: int, db_path: str = None) -> dict:
     """Compress a memory's content using zlib."""
-    conn = get_db()
+    conn = get_db(db_path)
     c = conn.cursor()
     c.execute("SELECT content FROM memories WHERE id = ?", (memory_id,))
     row = c.fetchone()
@@ -1745,9 +1745,9 @@ def compress_memory_v4(memory_id: int) -> dict:
     }
 
 
-def decompress_memory_v4(memory_id: int) -> dict:
+def decompress_memory_v4(memory_id: int, db_path: str = None) -> dict:
     """Decompress a previously compressed memory."""
-    conn = get_db()
+    conn = get_db(db_path)
     c = conn.cursor()
     c.execute("SELECT content FROM memories WHERE id = ?", (memory_id,))
     row = c.fetchone()
@@ -1766,9 +1766,9 @@ def decompress_memory_v4(memory_id: int) -> dict:
     return {"memory_id": memory_id, "decompressed": True, "size": len(decompressed)}
 
 
-def validate_conclusion_v4(conclusion_id: int, still_valid: bool, notes: str = "") -> dict:
+def validate_conclusion_v4(conclusion_id: int, still_valid: bool, notes: str = "", db_path: str = None) -> dict:
     """Validate or reject a conclusion."""
-    conn = get_db()
+    conn = get_db(db_path)
     c = conn.cursor()
     status = "confirmed" if still_valid else "rejected"
     c.execute("UPDATE conclusions SET status = ?, notes = COALESCE(?, notes) WHERE id = ?",
@@ -1778,9 +1778,9 @@ def validate_conclusion_v4(conclusion_id: int, still_valid: bool, notes: str = "
     return {"conclusion_id": conclusion_id, "status": status, "notes": notes}
 
 
-def rate_memory_v4(memory_id: int, feedback_type: str, context: str = "") -> dict:
+def rate_memory_v4(memory_id: int, feedback_type: str, context: str = "", db_path: str = None) -> dict:
     """Rate a memory and adjust its properties."""
-    conn = get_db()
+    conn = get_db(db_path)
     c = conn.cursor()
     # Map feedback to importance delta
     importance_delta = {
@@ -1808,9 +1808,9 @@ def rate_memory_v4(memory_id: int, feedback_type: str, context: str = "") -> dic
     }
 
 
-def get_conclusions_v4(status: str = None, limit: int = 10) -> dict:
+def get_conclusions_v4(status: str = None, limit: int = 10, db_path: str = None) -> dict:
     """Get conclusions with optional filtering."""
-    conn = get_db()
+    conn = get_db(db_path)
     c = conn.cursor()
     query = "SELECT * FROM conclusions"
     params = []
@@ -1828,9 +1828,9 @@ def get_conclusions_v4(status: str = None, limit: int = 10) -> dict:
     return {"conclusions": conclusions, "count": len(conclusions)}
 
 
-def get_memory_feedback_stats_v4(memory_id: int = None) -> dict:
+def get_memory_feedback_stats_v4(memory_id: int = None, db_path: str = None) -> dict:
     """Get feedback statistics."""
-    conn = get_db()
+    conn = get_db(db_path)
     c = conn.cursor()
     if memory_id:
         c.execute("SELECT importance, confidence_score, access_count, decay_score FROM memories WHERE id = ?", (memory_id,))
@@ -1844,9 +1844,9 @@ def get_memory_feedback_stats_v4(memory_id: int = None) -> dict:
         return {"overall_stats": dict(row) if row else {}}
 
 
-def get_cross_session_context_v4(topic: str, limit: int = 5, hours: int = 365) -> dict:
+def get_cross_session_context_v4(topic: str, limit: int = 5, hours: int = 365, db_path: str = None) -> dict:
     """Find past sessions related to a topic."""
-    conn = get_db()
+    conn = get_db(db_path)
     c = conn.cursor()
     cutoff = (datetime.now() - timedelta(hours=hours)).isoformat()
     # Search sessions by topic/summary
@@ -1866,9 +1866,9 @@ def get_cross_session_context_v4(topic: str, limit: int = 5, hours: int = 365) -
     return {"topic": topic, "related_sessions": sessions, "related_memories": memory_results}
 
 
-def get_working_memory_context_v4(session_id: str, conversation_id: str = "", limit: int = 10) -> dict:
+def get_working_memory_context_v4(session_id: str, conversation_id: str = "", limit: int = 10, db_path: str = None) -> dict:
     """Get current working memory context for a session."""
-    conn = get_db()
+    conn = get_db(db_path)
     c = conn.cursor()
     # Get recent memories from this session
     if conversation_id:
@@ -1907,9 +1907,9 @@ def route_retrieval_v4(query: str, session_id: str, conversation_id: str = "") -
     return {"strategy": strategy, "query": query, "session_id": session_id}
 
 
-def record_retrieval_telemetry_v4(memory_id: int, query_text: str, match_served: bool = False) -> dict:
+def record_retrieval_telemetry_v4(memory_id: int, query_text: str, match_served: bool = False, db_path: str = None) -> dict:
     """Record telemetry for memory retrieval events."""
-    conn = get_db()
+    conn = get_db(db_path)
     c = conn.cursor()
     # Increment access count
     c.execute("UPDATE memories SET access_count = access_count + 1 WHERE id = ?", (memory_id,))
@@ -1918,9 +1918,9 @@ def record_retrieval_telemetry_v4(memory_id: int, query_text: str, match_served:
     return {"recorded": True, "memory_id": memory_id, "match_served": match_served}
 
 
-def set_temporal_bounds_v4(memory_id: int, valid_from: str = None, valid_to: str = None, observed_at: str = None) -> dict:
+def set_temporal_bounds_v4(memory_id: int, valid_from: str = None, valid_to: str = None, observed_at: str = None, db_path: str = None) -> dict:
     """Set temporal validity bounds for a memory."""
-    conn = get_db()
+    conn = get_db(db_path)
     c = conn.cursor()
     updates = []
     params = []

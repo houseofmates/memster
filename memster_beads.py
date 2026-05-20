@@ -367,7 +367,7 @@ def audit_log(kind: str, data: dict = None, actor: str = "hermes") -> str:
     }
 
     with open(AUDIT_LOG_PATH, "a") as f:
-        f.write(json.dumps(entry) + "\\n")
+        f.write(json.dumps(entry) + "\n")
 
     return entry["id"]
 
