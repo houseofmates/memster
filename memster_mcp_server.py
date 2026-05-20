@@ -6,12 +6,14 @@ Combines working base with all 47 tools from backup.
 
 import json
 import logging
+import math
 import os
 import re
 import sqlite3
 import sys
+import zlib
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 from urllib import request, error
 
 # NVIDIA NIM Embeddings (frontier-quality 2048d vectors)
@@ -55,14 +57,6 @@ try:
 except ImportError:
     MCP_AVAILABLE = False
     print("warning: mcp package not available", file=sys.stderr)
-
-# aiohttp import with graceful fallback
-try:
-    import aiohttp
-    from aiohttp import web
-    AIOHTTP_AVAILABLE = True
-except ImportError:
-    AIOHTTP_AVAILABLE = False
 
 
 # V4 feature module
@@ -232,8 +226,7 @@ def init_database() -> None:
         primary_fronter_uid TEXT,
         primary_fronter_name TEXT,
         memory_count INTEGER DEFAULT 0,
-        topics TEXT,
-        FOREIGN KEY (primary_fronter_uid) REFERENCES sp_members(uid)
+        topics TEXT
     )""")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_session_id ON sessions(session_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_session_started ON sessions(started_at)")
@@ -306,11 +299,6 @@ def init_database() -> None:
             logger.info(f"Spaced repetition schema initialized: {sr_init}")
         except Exception as e:
             logger.warning(f"SR init failed: {e}")
-    # Phase 2: trust + typed schemas + context optimizer
-    phase2 = init_phase2_features(conn)
-    if phase2.get('initialized'):
-        logger.info(f"Phase 2 features: {phase2}")
-
     logger.info(f"Database initialized at {DATABASE_PATH}")
 
 
@@ -390,11 +378,6 @@ def check_duplicate_before_insert(content, category):
     conn = get_db_connection()
     cursor = conn.cursor()
     normalized_new = normalize_text(content)
-    cursor.execute("SELECT id, content FROM memories WHERE category = ?", (category or "general",))
-    for row in cursor.fetchall():
-        if normalize_text(row['content']) == normalized_new:
-            conn.close()
-            return row['id']
     cursor.execute("SELECT id, content FROM memories")
     for row in cursor.fetchall():
         if normalize_text(row['content']) == normalized_new:
@@ -948,9 +931,7 @@ def get_briefing(max_items: int = 10) -> Dict:
 
     memories = [dict(r) for r in cursor.fetchall()]
 
-    # Also get wiki context
-    cursor.execute("SELECT slug, title FROM wiki_pages ORDER BY RANDOM() LIMIT 3")
-    wiki_snippets = [f"{r['title']} ({r['slug']})" for r in cursor.fetchall()]
+    wiki_snippets = []
 
     conn.close()
 
@@ -1164,13 +1145,14 @@ def hybrid_search(query: str, limit: int = 10, db_path: str = None) -> List[Dict
     all_ids = set(vector_results.keys()) | set(fts_results.keys())
     if not all_ids:
         conn.close()
-        # fallback to LIKE search
-        c = conn.cursor()
+        fallback_conn = sqlite3.connect(path)
+        fallback_conn.row_factory = sqlite3.Row
+        c = fallback_conn.cursor()
         c.execute("""SELECT id, content, category, tier, COALESCE(importance, 0.5) as importance 
                      FROM memories WHERE content LIKE ? ORDER BY importance DESC LIMIT ?""",
                    (f"%{query}%", limit))
         results = [dict(r) for r in c.fetchall()]
-        conn.close()
+        fallback_conn.close()
         return results
 
     # 4) get full memory data for candidates
@@ -1242,7 +1224,6 @@ def sleep_consolidate(db_path: str = None, batch_size: int = 100) -> Dict:
         #   1 access:  0.05 / (1 + log(1)) = 0.05 / 1 = 0.05
         #   5 accesses: 0.05 / (1 + log(5)) = 0.05 / 2.6 = 0.019
         #   10 accesses: 0.05 / (1 + log(10)) = 0.05 / 3.3 = 0.015
-        import math
         access_multiplier = 1.0 / (1 + math.log1p(max(0, access_count)))
         new_decay = current_decay * (1.0 - (0.05 * access_multiplier))
         new_decay = max(0.05, new_decay)  # floor at 0.05 so nothing disappears
@@ -1293,9 +1274,10 @@ def remember_batch(memories: List[Dict], db_path: str = None) -> Dict:
             skipped.append({"content": content[:50], "reason": "duplicate"})
             continue
 
-        c.execute("""INSERT INTO memories (content, category, t_event, t_recorded, tier, memory_type) 
-                     VALUES (?, ?, ?, ?, ?, ?)""",
-                   (content, category, now, now, "L2", category if category in ("world", "experience", "opinion", "observation") else "observation"))
+        network_type = category if category in ("world", "experience", "opinion", "observation") else "observation"
+        c.execute("""INSERT INTO memories (content, category, network_type, t_event, t_recorded, tier, memory_type) 
+                     VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                   (content, category, network_type, now, now, "L2", network_type))
         mid = c.lastrowid
         created.append(mid)
 
@@ -1320,12 +1302,6 @@ if MCP_AVAILABLE:
 
 # === Tool Definitions ===
 
-
-# V5 Features helper
-def get_v5_features():
-    """Get V5 features instance with database path."""
-    from memster_v5_features import get_v5_features as v5_factory
-    return v5_factory(DB_PATH)
 
 TOOL_DEFINITIONS = [
     # Activity tracking tools
@@ -2576,20 +2552,13 @@ if MCP_AVAILABLE:
             conn.close()
             return [TextContent(type="text", text=json.dumps({"deleted": len(ids), "ids": ids}, indent=2))]
 
-        elif name == "find_duplicates":
-            groups = find_near_duplicate_memories(arguments.get("similarity_threshold", 0.8))
-            result = [{"count": len(g), "memories": [{"id": m["id"], "content": m["content"][:100], "category": m.get("category")} for m in g]} for g in groups]
-            return [TextContent(type="text", text=json.dumps({"duplicate_groups": len(result), "groups": result}, indent=2))]
-
-
-
         # === Semantic search ===
         elif name == "semantic_memory_search":
             try:
+                query = arguments.get("query", "")
+                limit = arguments.get("limit", 5)
                 if EMBEDDINGS_AVAILABLE:
-                    # Use real vector search
-                    sem_results = vector_search(arguments.get("query"), limit=arguments.get("limit", 5), threshold=0.1, db_path=DB_PATH)
-                    # Enrich with memory content
+                    sem_results = vector_search(query, limit=limit, threshold=0.1, db_path=DB_PATH)
                     if sem_results:
                         conn = get_db_connection()
                         cursor = conn.cursor()
@@ -2598,14 +2567,10 @@ if MCP_AVAILABLE:
                         cursor.execute(f"SELECT id, content, category, tier, importance, decay_score, access_count FROM memories WHERE id IN ({placeholders})", ids)
                         mem_map = {r["id"]: dict(r) for r in cursor.fetchall()}
                         conn.close()
-                        enriched = []
-                        for r in sem_results:
-                            mem = mem_map.get(r["id"], {})
-                            enriched.append({**mem, "similarity": r["similarity"], "id": r["id"]})
-                            return [TextContent(type="text", text=json.dumps({"query": arguments.get("query"), "count": len(enriched), "results": enriched, "embedding_model": "nvidia/llama-3.2-nv-embedqa-1b-v2"}, indent=2))]
-                            # Fallback to text search
-                            results = get_memories_with_scoring(query_text=arguments.get("query"), max_results=arguments.get("limit", 5))
-                            return [TextContent(type="text", text=json.dumps({"query": arguments.get("query"), "count": len(results), "results": results, "note": "using text search fallback (embeddings module not loaded)"}, indent=2))]
+                        enriched = [{**mem_map.get(r["id"], {}), "similarity": r["similarity"], "id": r["id"]} for r in sem_results]
+                        return [TextContent(type="text", text=json.dumps({"query": query, "count": len(enriched), "results": enriched, "embedding_model": "nvidia/llama-3.2-nv-embedqa-1b-v2"}, indent=2))]
+                results = get_memories_with_scoring(query_text=query, max_results=limit)
+                return [TextContent(type="text", text=json.dumps({"query": query, "count": len(results), "results": results, "note": "using text search (embeddings unavailable)"}, indent=2))]
             except Exception as e:
                 return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
 
@@ -2615,7 +2580,7 @@ if MCP_AVAILABLE:
                 result_dict = {"query": arguments.get("query"), "count": len(results), "results": results}
                 if EMBEDDINGS_AVAILABLE:
                     result_dict["embedding_model"] = "nvidia/llama-3.2-nv-embedqa-1b-v2"
-                    return [TextContent(type="text", text=json.dumps(result_dict, indent=2))]
+                return [TextContent(type="text", text=json.dumps(result_dict, indent=2))]
             except Exception as e:
                 return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
 
@@ -2647,45 +2612,47 @@ if MCP_AVAILABLE:
         elif name == "find_similar":
             try:
                 memory_id = arguments.get("memory_id")
+                limit = arguments.get("limit", 5)
                 if not memory_id:
                     return [TextContent(type="text", text=json.dumps({"error": "memory_id required"}, indent=2))]
-                    # Try vector-based similarity first
-                    if EMBEDDINGS_AVAILABLE:
+                if EMBEDDINGS_AVAILABLE:
+                    try:
                         src_emb = get_embedding(memory_id, DB_PATH)
                         if src_emb:
-                            all_embeds = __import__("nvidia_nim_embeddings").get_all_embeddings(DB_PATH)
+                            import nvidia_nim_embeddings as _nim
+                            all_embeds = _nim.get_all_embeddings(DB_PATH)
                             scored = []
                             for mid, emb_vec in all_embeds.items():
                                 if mid == memory_id:
                                     continue
-                                    sim = cosine_similarity(src_emb, emb_vec)
-                                    if sim > 0.1:
-                                        scored.append({"id": mid, "similarity": round(sim, 4)})
-                                        scored.sort(key=lambda x: x["similarity"], reverse=True)
-                                        # Enrich with content
-                                        if scored:
-                                            conn = get_db_connection()
-                                            c = conn.cursor()
-                                            ids = [s["id"] for s in scored[:arguments.get("limit", 5)]]
-                                            placeholders = ",".join("?" * len(ids))
-                                            c.execute(f"SELECT id, content, category FROM memories WHERE id IN ({placeholders})", ids)
-                                            mem_map = {r["id"]: dict(r) for r in c.fetchall()}
-                                            conn.close()
-                                            enriched = [{**mem_map.get(s["id"], {}), "id": s["id"], "similarity": s["similarity"]} for s in scored[:arguments.get("limit", 5)]]
-                                            return [TextContent(type="text", text=json.dumps({"memory_id": memory_id, "similar": enriched, "method": "vector_similarity"}, indent=2))]
-                                            # Fallback: find memories with same category
-                                            conn = get_db_connection()
-                                            c = conn.cursor()
-                                            c.execute("SELECT category FROM memories WHERE id = ?", (memory_id,))
-                                            row = c.fetchone()
-                                            if row and row["category"]:
-                                                c.execute("SELECT id, content, category FROM memories WHERE category = ? AND id != ? LIMIT ?",
-                                                (row["category"], memory_id, arguments.get("limit", 5)))
-                                                similar = [dict(r) for r in c.fetchall()]
-                                            else:
-                                                similar = []
-                                                conn.close()
-                                                return [TextContent(type="text", text=json.dumps({"memory_id": memory_id, "similar": similar, "note": "using category-based fallback"}, indent=2))]
+                                sim = cosine_similarity(src_emb, emb_vec)
+                                if sim > 0.1:
+                                    scored.append({"id": mid, "similarity": round(sim, 4)})
+                            scored.sort(key=lambda x: x["similarity"], reverse=True)
+                            if scored:
+                                conn = get_db_connection()
+                                c = conn.cursor()
+                                ids = [s["id"] for s in scored[:limit]]
+                                placeholders = ",".join("?" * len(ids))
+                                c.execute(f"SELECT id, content, category FROM memories WHERE id IN ({placeholders})", ids)
+                                mem_map = {r["id"]: dict(r) for r in c.fetchall()}
+                                conn.close()
+                                enriched = [{**mem_map.get(s["id"], {}), "id": s["id"], "similarity": s["similarity"]} for s in scored[:limit]]
+                                return [TextContent(type="text", text=json.dumps({"memory_id": memory_id, "similar": enriched, "method": "vector_similarity"}, indent=2))]
+                    except Exception:
+                        pass
+                conn = get_db_connection()
+                c = conn.cursor()
+                c.execute("SELECT category FROM memories WHERE id = ?", (memory_id,))
+                row = c.fetchone()
+                if row and row["category"]:
+                    c.execute("SELECT id, content, category FROM memories WHERE category = ? AND id != ? LIMIT ?",
+                              (row["category"], memory_id, limit))
+                    similar = [dict(r) for r in c.fetchall()]
+                else:
+                    similar = []
+                conn.close()
+                return [TextContent(type="text", text=json.dumps({"memory_id": memory_id, "similar": similar, "note": "category-based fallback"}, indent=2))]
             except Exception as e:
                 return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
 
@@ -2712,43 +2679,15 @@ if MCP_AVAILABLE:
                 link_type = arguments.get("link_type", "related")
                 if not source_id or not target_id:
                     return [TextContent(type="text", text=json.dumps({"error": "source_id and target_id required"}, indent=2))]
-                    conn = get_db_connection()
-                    c = conn.cursor()
-                    c.execute("INSERT OR REPLACE INTO memory_edges (source_memory_id, target_memory_id, link_type, weight) VALUES (?, ?, ?, 1.0)",
-                    (source_id, target_id, link_type))
-                    c.execute("INSERT OR REPLACE INTO memory_edges (source_memory_id, target_memory_id, link_type, weight) VALUES (?, ?, ?, 1.0)",
-                    (target_id, source_id, link_type))
-                    conn.commit()
-                    conn.close()
-                    return [TextContent(type="text", text=json.dumps({"linked": True, "source": source_id, "target": target_id, "type": link_type}, indent=2))]
-            except Exception as e:
-                return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
-
-        elif name == "merge_memories":
-            try:
-                primary_id = arguments.get("primary_id")
-                secondary_id = arguments.get("secondary_id")
-                merged_content = arguments.get("merged_content", "")
-                if not primary_id or not secondary_id:
-                    return [TextContent(type="text", text=json.dumps({"error": "primary_id and secondary_id required"}, indent=2))]
-                    conn = get_db_connection()
-                    c = conn.cursor()
-                    c.execute("SELECT content, category FROM memories WHERE id = ?", (primary_id,))
-                    primary = c.fetchone()
-                    c.execute("SELECT content, category FROM memories WHERE id = ?", (secondary_id,))
-                    secondary = c.fetchone()
-                    if not primary or not secondary:
-                        conn.close()
-                        return [TextContent(type="text", text=json.dumps({"error": "one or both memories not found"}, indent=2))]
-                        if not merged_content:
-                            merged_content = primary["content"] + "\n\n" + secondary["content"]
-                            c.execute("UPDATE memories SET content = ? WHERE id = ?", (merged_content, primary_id))
-                            c.execute("DELETE FROM memories WHERE id = ?", (secondary_id,))
-                            c.execute("UPDATE memory_edges SET source_memory_id = ? WHERE source_memory_id = ?", (primary_id, secondary_id))
-                            c.execute("UPDATE memory_edges SET target_memory_id = ? WHERE target_memory_id = ?", (primary_id, secondary_id))
-                            conn.commit()
-                            conn.close()
-                            return [TextContent(type="text", text=json.dumps({"merged": True, "primary": primary_id, "absorbed": secondary_id}, indent=2))]
+                conn = get_db_connection()
+                c = conn.cursor()
+                c.execute("INSERT OR REPLACE INTO memory_edges (source_memory_id, target_memory_id, relation_type, weight) VALUES (?, ?, ?, 1.0)",
+                          (source_id, target_id, link_type))
+                c.execute("INSERT OR REPLACE INTO memory_edges (source_memory_id, target_memory_id, relation_type, weight) VALUES (?, ?, ?, 1.0)",
+                          (target_id, source_id, link_type))
+                conn.commit()
+                conn.close()
+                return [TextContent(type="text", text=json.dumps({"linked": True, "source": source_id, "target": target_id, "type": link_type}, indent=2))]
             except Exception as e:
                 return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
 
@@ -2766,8 +2705,11 @@ if MCP_AVAILABLE:
                         content = row["content"]
                     else:
                         return [TextContent(type="text", text=json.dumps({"error": "memory not found and no content provided"}, indent=2))]
-                        result = extract_graph_relations(memory_id, content)
-                        return [TextContent(type="text", text=json.dumps(result, indent=2))]
+                if V4_AVAILABLE:
+                    result = extract_graph_relations_v4(memory_id, content)
+                else:
+                    result = {"memory_id": memory_id, "relations": [], "note": "v4 features not loaded"}
+                return [TextContent(type="text", text=json.dumps(result, indent=2))]
             except Exception as e:
                 return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
 
@@ -2787,17 +2729,27 @@ if MCP_AVAILABLE:
                 entity_type = arguments.get("entity_type")
                 if not entity_name:
                     return [TextContent(type="text", text=json.dumps({"error": "entity_name required"}, indent=2))]
-                    conn = get_db_connection()
-                    c = conn.cursor()
-                    if entity_type:
-                        c.execute("SELECT DISTINCT m.id, m.content, m.category, me.entity_type FROM memory_entities me JOIN memories m ON me.memory_id = m.id WHERE me.entity_name LIKE ? AND me.entity_type = ? ORDER BY m.importance DESC LIMIT ?",
-                        (f"%{entity_name}%", entity_type, arguments.get("max_results", 10)))
-                    else:
-                        c.execute("SELECT DISTINCT m.id, m.content, m.category, me.entity_type FROM memory_entities me JOIN memories m ON me.memory_id = m.id WHERE me.entity_name LIKE ? ORDER BY m.importance DESC LIMIT ?",
-                        (f"%{entity_name}%", arguments.get("max_results", 10)))
-                        results = [{"id": r["id"], "content": r["content"][:200], "category": r["category"], "entity_type": r["entity_type"]} for r in c.fetchall()]
-                        conn.close()
-                        return [TextContent(type="text", text=json.dumps({"entity": entity_name, "type": entity_type, "count": len(results), "results": results}, indent=2))]
+                conn = get_db_connection()
+                c = conn.cursor()
+                if entity_type:
+                    c.execute("""SELECT DISTINCT m.id, m.content, m.category, e.entity_type
+                                 FROM memory_entities me
+                                 JOIN memories m ON me.memory_id = m.id
+                                 JOIN entities e ON me.entity_id = e.id
+                                 WHERE e.canonical_name LIKE ? AND e.entity_type = ?
+                                 ORDER BY m.importance DESC LIMIT ?""",
+                              (f"%{entity_name}%", entity_type, arguments.get("max_results", 10)))
+                else:
+                    c.execute("""SELECT DISTINCT m.id, m.content, m.category, e.entity_type
+                                 FROM memory_entities me
+                                 JOIN memories m ON me.memory_id = m.id
+                                 JOIN entities e ON me.entity_id = e.id
+                                 WHERE e.canonical_name LIKE ?
+                                 ORDER BY m.importance DESC LIMIT ?""",
+                              (f"%{entity_name}%", arguments.get("max_results", 10)))
+                results = [{"id": r["id"], "content": r["content"][:200], "category": r["category"], "entity_type": r["entity_type"]} for r in c.fetchall()]
+                conn.close()
+                return [TextContent(type="text", text=json.dumps({"entity": entity_name, "type": entity_type, "count": len(results), "results": results}, indent=2))]
             except Exception as e:
                 return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
 
@@ -2819,33 +2771,31 @@ if MCP_AVAILABLE:
                 content = arguments.get("content", "")
                 category = arguments.get("category", "")
                 result = {"content_preview": content[:200], "category": category, "entities_found": [], "related_memories": [], "related_wiki": []}
-                # Extract potential entities from content (basic regex)
                 entities = set()
                 for pattern, etype in [(r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}', 'ip'),
-                (r'/[a-zA-Z][^\s,]*', 'path'),
-                (r'\.(250|233)\b', 'host'),
-                (r'signal|discord|telegram|whatsapp', 'platform')]:
+                                       (r'/[a-zA-Z][^\s,]*', 'path'),
+                                       (r'signal|discord|telegram|whatsapp', 'platform')]:
                     for m in re.finditer(pattern, content):
                         entities.add((m.group(), etype))
-                        result["entities_found"] = [{"name": e[0], "type": e[1]} for e in entities]
-                        # Search for related memories
-                        conn = get_db_connection()
-                        c = conn.cursor()
-                        for ename, _ in entities:
-                            c.execute("SELECT id, content FROM memories WHERE content LIKE ? LIMIT 3", (f"%{ename}%",))
-                            for row in c.fetchall():
-                                result["related_memories"].append({"id": row["id"], "content": row["content"][:100]})
-                                conn.close()
-                                # Search wiki
-                                try:
-                                    for ename, _ in entities:
-                                        wiki_results = wiki_search_func(ename, limit=2)
-                                        for wr in wiki_results:
-                                            result["related_wiki"].append({"slug": wr.get("slug", ""), "title": wr.get("title", "")})
-                                except Exception:
-                                    pass
-                                    result["note"] = "basic entity extraction (full enrich requires embeddings module)"
-                                    return [TextContent(type="text", text=json.dumps(result, indent=2))]
+                result["entities_found"] = [{"name": e[0], "type": e[1]} for e in entities]
+                if entities:
+                    conn = get_db_connection()
+                    c = conn.cursor()
+                    for ename, _ in entities:
+                        c.execute("SELECT id, content FROM memories WHERE content LIKE ? LIMIT 3", (f"%{ename}%",))
+                        for row in c.fetchall():
+                            result["related_memories"].append({"id": row["id"], "content": row["content"][:100]})
+                    conn.close()
+                    if V4_AVAILABLE:
+                        try:
+                            for ename, _ in list(entities)[:3]:
+                                wiki_results = wiki_search_v4(ename, limit=2)
+                                for wr in (wiki_results if isinstance(wiki_results, list) else []):
+                                    result["related_wiki"].append({"slug": wr.get("slug", ""), "title": wr.get("title", "")})
+                        except Exception:
+                            pass
+                result["note"] = "basic entity extraction"
+                return [TextContent(type="text", text=json.dumps(result, indent=2))]
             except Exception as e:
                 return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
 
@@ -2877,196 +2827,6 @@ if MCP_AVAILABLE:
             except Exception as e:
                 return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
 
-        elif name == "get_cross_session_context":
-            # Find past sessions related to a topic
-            try:
-                topic = arguments.get("topic", "")
-                limit = arguments.get("limit", 5)
-                hours = arguments.get("hours", 365)
-                result = get_cross_session_context(topic, limit, hours)
-                return [TextContent(type="text", text=json.dumps(result, indent=2))]
-            except Exception as e:
-                return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
-
-        elif name == "track_retrieval_telemetry":
-            try:
-                memory_id = arguments.get("memory_id")
-                query_text = arguments.get("query_text", "")
-                match_served = arguments.get("match_served", False)
-                conn = get_db_connection()
-                c = conn.cursor()
-                c.execute("UPDATE memories SET access_count = access_count + 1 WHERE id = ?", (memory_id,))
-                conn.commit()
-                conn.close()
-                return [TextContent(type="text", text=json.dumps({"tracked": True, "memory_id": memory_id}, indent=2))]
-            except Exception as e:
-                return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
-
-        elif name == "score_memory_confidence":
-            try:
-                memory_id = arguments.get("memory_id")
-                if not memory_id:
-                    return [TextContent(type="text", text=json.dumps({"error": "memory_id required"}, indent=2))]
-                    conn = get_db_connection()
-                    c = conn.cursor()
-                    c.execute("SELECT id, content, category, importance, decay_score, access_count, created_at FROM memories WHERE id = ?", (memory_id,))
-                    row = c.fetchone()
-                    if not row:
-                        conn.close()
-                        return [TextContent(type="text", text=json.dumps({"error": "memory not found"}, indent=2))]
-                        # Multi-signal confidence
-                        confidence = 0.5
-                        # Importance signal
-                        if row["importance"] and row["importance"] > 0.5:
-                            confidence += 0.1
-                            # Access frequency signal
-                            if row["access_count"] and row["access_count"] > 3:
-                                confidence += 0.1
-                                # Decay signal
-                                if row["decay_score"] and row["decay_score"] < 0.3:
-                                    confidence += 0.1
-                                    # Specificity signal
-                                    content = row["content"] or ""
-                                    if re.search(r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}', content):
-                                        confidence += 0.1
-                                        if re.search(r'/[a-zA-Z]', content):
-                                            confidence += 0.05
-                                            confidence = min(confidence, 1.0)
-                                            conn.close()
-                                            return [TextContent(type="text", text=json.dumps({"memory_id": memory_id, "confidence": round(confidence, 3), "signals": {"importance": row["importance"], "access_count": row["access_count"], "decay_score": row["decay_score"]}}, indent=2))]
-            except Exception as e:
-                return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
-
-        elif name == "record_retrieval_telemetry":
-            try:
-                memory_id = arguments.get("memory_id")
-                query_text = arguments.get("query_text", "")
-                conn = get_db_connection()
-                c = conn.cursor()
-                c.execute("UPDATE memories SET access_count = access_count + 1 WHERE id = ?", (memory_id,))
-                conn.commit()
-                conn.close()
-                return [TextContent(type="text", text=json.dumps({"recorded": True}, indent=2))]
-            except Exception as e:
-                return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
-
-        elif name == "route_retrieval":
-            try:
-                query = arguments.get("query", "")
-                session_id = arguments.get("session_id", "")
-                conversation_id = arguments.get("conversation_id", "")
-                result = {"query": query, "strategy": "hybrid", "reason": "default routing"}
-                if len(query.split()) <= 2:
-                    result["strategy"] = "keyword"
-                    result["reason"] = "short query favors keyword search"
-                elif any(kw in query.lower() for kw in ["how", "why", "what if", "explain"]):
-                    result["strategy"] = "semantic"
-                    result["reason"] = "conceptual query favors semantic search"
-                    return [TextContent(type="text", text=json.dumps(result, indent=2))]
-            except Exception as e:
-                return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
-
-        elif name == "infer_follow_up_intent":
-            try:
-                session_id = arguments.get("session_id", "")
-                conversation_id = arguments.get("conversation_id", "")
-                query = arguments.get("query", "")
-                result = {"is_follow_up": False, "confidence": 0.0, "reason": "no prior context match"}
-                # Simple heuristic: pronouns and references suggest follow-up
-                follow_indicators = ["that", "this", "it", "the same", "earlier", "before", "previous", "again"]
-                if any(ind in query.lower() for ind in follow_indicators):
-                    result = {"is_follow_up": True, "confidence": 0.6, "reason": "contains referential language"}
-                    return [TextContent(type="text", text=json.dumps(result, indent=2))]
-            except Exception as e:
-                return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
-
-        elif name == "get_working_memory_context":
-            try:
-                session_id = arguments.get("session_id", "")
-                conversation_id = arguments.get("conversation_id", "")
-                limit = arguments.get("limit", 10)
-                # Get recent memories as working context
-                results = get_memories_with_scoring(max_results=limit)
-                return [TextContent(type="text", text=json.dumps({"session_id": session_id, "context_count": len(results), "memories": results}, indent=2))]
-            except Exception as e:
-                return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
-
-        elif name == "update_memory":
-            try:
-                memory_id = arguments.get("memory_id")
-                if not memory_id:
-                    return [TextContent(type="text", text=json.dumps({"error": "memory_id required"}, indent=2))]
-                    new_content = arguments.get("content")
-                    new_category = arguments.get("category")
-                    new_tier = arguments.get("tier")
-                    updates = []
-                    params = []
-                    if new_content:
-                        updates.append("content = ?")
-                        params.append(new_content)
-                        if new_category:
-                            updates.append("category = ?")
-                            params.append(new_category)
-                            if new_tier:
-                                updates.append("tier = ?")
-                                params.append(new_tier)
-                                if not updates:
-                                    return [TextContent(type="text", text=json.dumps({"error": "no fields to update"}, indent=2))]
-                                    params.append(memory_id)
-                                    conn = get_db_connection()
-                                    cursor = conn.cursor()
-                                    cursor.execute(f"UPDATE memories SET {', '.join(updates)} WHERE id = ?", params)
-                                    conn.commit()
-                                    conn.close()
-                                    # Re-embed if content changed
-                                    if new_content and EMBEDDINGS_AVAILABLE:
-                                        try:
-                                            auto_embed_on_insert(memory_id, new_content, DB_PATH)
-                                        except Exception:
-                                            pass
-                                            return [TextContent(type="text", text=json.dumps({"updated": True, "id": memory_id, "fields": [u.split()[0] for u in updates]}, indent=2))]
-            except Exception as e:
-                return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
-
-        elif name == "delete_memory":
-            try:
-                memory_id = arguments.get("memory_id")
-                if not memory_id:
-                    return [TextContent(type="text", text=json.dumps({"error": "memory_id required"}, indent=2))]
-                    conn = get_db_connection()
-                    c = conn.cursor()
-                    c.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
-                    c.execute("DELETE FROM memory_entities WHERE memory_id = ?", (memory_id,))
-                    c.execute("DELETE FROM memory_edges WHERE source_memory_id = ? OR target_memory_id = ?", (memory_id, memory_id))
-                    c.execute("DELETE FROM memory_embeddings WHERE memory_id = ?", (memory_id,))
-                    conn.commit()
-                    conn.close()
-                    return [TextContent(type="text", text=json.dumps({"deleted": True, "id": memory_id}, indent=2))]
-            except Exception as e:
-                return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
-
-        elif name == "delete_by_query":
-            try:
-                query_text = arguments.get("query_text")
-                exact = arguments.get("exact_match", False)
-                conn = get_db_connection()
-                c = conn.cursor()
-                if exact:
-                    c.execute("SELECT id FROM memories WHERE content = ?", (query_text,))
-                else:
-                    c.execute("SELECT id FROM memories WHERE content LIKE ?", (f"%{query_text}%",))
-                    ids = [r["id"] for r in c.fetchall()]
-                    for mid in ids:
-                        c.execute("DELETE FROM memories WHERE id = ?", (mid,))
-                        c.execute("DELETE FROM memory_entities WHERE memory_id = ?", (mid,))
-                        c.execute("DELETE FROM memory_edges WHERE source_memory_id = ? OR target_memory_id = ?", (mid, mid))
-                        c.execute("DELETE FROM memory_embeddings WHERE memory_id = ?", (mid,))
-                        conn.commit()
-                        conn.close()
-                        return [TextContent(type="text", text=json.dumps({"deleted_count": len(ids), "ids": ids}, indent=2))]
-            except Exception as e:
-                return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
-
         elif name == "filter_passive_capture":
             try:
                 dry_run = arguments.get("dry_run", True)
@@ -3082,8 +2842,13 @@ if MCP_AVAILABLE:
                     if dry_run:
                         result = {"would_delete": len(rows), "sample_ids": [r["id"] for r in rows[:10]], "dry_run": True, "note": "basic fallback"}
                     else:
+                        conn2 = get_db_connection()
+                        c2 = conn2.cursor()
                         for r in rows:
-                            delete_memory_by_id(r["id"])
+                            c2.execute("DELETE FROM memory_edges WHERE source_memory_id = ? OR target_memory_id = ?", (r["id"], r["id"]))
+                            c2.execute("DELETE FROM memories WHERE id = ?", (r["id"],))
+                        conn2.commit()
+                        conn2.close()
                         result = {"deleted": len(rows), "note": "basic fallback"}
                 return [TextContent(type="text", text=json.dumps(result, indent=2))]
             except Exception as e:
@@ -3127,64 +2892,20 @@ if MCP_AVAILABLE:
             except Exception as e:
                 return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
 
-        elif name == "rate_memory":
-            try:
-                memory_id = arguments.get("memory_id")
-                feedback_type = arguments.get("feedback_type")
-                context = arguments.get("context", "")
-                if not memory_id or not feedback_type:
-                    return [TextContent(type="text", text=json.dumps({"error": "memory_id and feedback_type required"}, indent=2))]
-                    conn = get_db_connection()
-                    c = conn.cursor()
-                    if feedback_type == "promote":
-                        c.execute("UPDATE memories SET importance = MIN(importance + 0.2, 1.0) WHERE id = ?", (memory_id,))
-                    elif feedback_type == "demote":
-                        c.execute("UPDATE memories SET importance = MAX(importance - 0.2, 0.0) WHERE id = ?", (memory_id,))
-                    elif feedback_type == "helpful":
-                        c.execute("UPDATE memories SET access_count = access_count + 1 WHERE id = ?", (memory_id,))
-                    elif feedback_type == "irrelevant" or feedback_type == "wrong" or feedback_type == "outdated":
-                        c.execute("UPDATE memories SET decay_score = MIN(decay_score + 0.3, 1.0) WHERE id = ?", (memory_id,))
-                        conn.commit()
-                        conn.close()
-                        return [TextContent(type="text", text=json.dumps({"rated": True, "memory_id": memory_id, "feedback": feedback_type}, indent=2))]
-            except Exception as e:
-                return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
-
-        elif name == "get_memory_feedback_stats":
-            try:
-                memory_id = arguments.get("memory_id")
-                conn = get_db_connection()
-                c = conn.cursor()
-                if memory_id:
-                    c.execute("SELECT id, importance, decay_score, access_count FROM memories WHERE id = ?", (memory_id,))
-                    row = c.fetchone()
-                    conn.close()
-                    if row:
-                        return [TextContent(type="text", text=json.dumps({"memory_id": row["id"], "importance": row["importance"], "decay_score": row["decay_score"], "access_count": row["access_count"]}, indent=2))]
-                    else:
-                        return [TextContent(type="text", text=json.dumps({"error": "memory not found"}, indent=2))]
-                else:
-                    c.execute("SELECT AVG(importance) as avg_imp, AVG(decay_score) as avg_decay, AVG(access_count) as avg_acc FROM memories")
-                    row = c.fetchone()
-                    conn.close()
-                    return [TextContent(type="text", text=json.dumps({"avg_importance": row["avg_imp"] if row else 0, "avg_decay": row["avg_decay"] if row else 0, "avg_access_count": row["avg_acc"] if row else 0}, indent=2))]
-            except Exception as e:
-                return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
-
         elif name == "create_task":
             try:
-                name = arguments.get("name")
+                task_name = arguments.get("name")
                 description = arguments.get("description", "")
-                if not name:
+                if not task_name:
                     return [TextContent(type="text", text=json.dumps({"error": "name required"}, indent=2))]
-                    conn = get_db_connection()
-                    c = conn.cursor()
-                    c.execute("INSERT INTO tasks (name, description, status, priority, release_version) VALUES (?, ?, 'active', 5, ?)",
-                    (name, description, arguments.get("release_version", "")))
-                    task_id = c.lastrowid
-                    conn.commit()
-                    conn.close()
-                    return [TextContent(type="text", text=json.dumps({"created": True, "id": task_id, "name": name}, indent=2))]
+                conn = get_db_connection()
+                c = conn.cursor()
+                c.execute("INSERT INTO tasks (name, description, status, priority, release_version) VALUES (?, ?, 'active', 5, ?)",
+                          (task_name, description, arguments.get("release_version", "")))
+                task_id = c.lastrowid
+                conn.commit()
+                conn.close()
+                return [TextContent(type="text", text=json.dumps({"created": True, "id": task_id, "name": task_name}, indent=2))]
             except Exception as e:
                 return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
 
@@ -3193,12 +2914,12 @@ if MCP_AVAILABLE:
                 task_id = arguments.get("task_id")
                 if not task_id:
                     return [TextContent(type="text", text=json.dumps({"error": "task_id required"}, indent=2))]
-                    conn = get_db_connection()
-                    c = conn.cursor()
-                    c.execute("UPDATE tasks SET status = 'completed', completed_at = CURRENT_TIMESTAMP WHERE id = ?", (task_id,))
-                    conn.commit()
-                    conn.close()
-                    return [TextContent(type="text", text=json.dumps({"completed": True, "id": task_id}, indent=2))]
+                conn = get_db_connection()
+                c = conn.cursor()
+                c.execute("UPDATE tasks SET status = 'completed', completed_at = CURRENT_TIMESTAMP WHERE id = ?", (task_id,))
+                conn.commit()
+                conn.close()
+                return [TextContent(type="text", text=json.dumps({"completed": True, "id": task_id}, indent=2))]
             except Exception as e:
                 return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
 
@@ -3208,12 +2929,12 @@ if MCP_AVAILABLE:
                 task_id = arguments.get("task_id")
                 if not memory_id or not task_id:
                     return [TextContent(type="text", text=json.dumps({"error": "memory_id and task_id required"}, indent=2))]
-                    conn = get_db_connection()
-                    c = conn.cursor()
-                    c.execute("INSERT OR REPLACE INTO task_memory_assignments (task_id, memory_id) VALUES (?, ?)", (task_id, memory_id))
-                    conn.commit()
-                    conn.close()
-                    return [TextContent(type="text", text=json.dumps({"assigned": True, "memory_id": memory_id, "task_id": task_id}, indent=2))]
+                conn = get_db_connection()
+                c = conn.cursor()
+                c.execute("INSERT OR REPLACE INTO task_memory_assignments (task_id, memory_id) VALUES (?, ?)", (task_id, memory_id))
+                conn.commit()
+                conn.close()
+                return [TextContent(type="text", text=json.dumps({"assigned": True, "memory_id": memory_id, "task_id": task_id}, indent=2))]
             except Exception as e:
                 return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
 
@@ -3222,12 +2943,12 @@ if MCP_AVAILABLE:
                 task_id = arguments.get("task_id")
                 if not task_id:
                     return [TextContent(type="text", text=json.dumps({"error": "task_id required"}, indent=2))]
-                    conn = get_db_connection()
-                    c = conn.cursor()
-                    c.execute("SELECT m.id, m.content, m.category FROM memories m JOIN task_memory_assignments tma ON m.id = tma.memory_id WHERE tma.task_id = ?", (task_id,))
-                    results = [{"id": r["id"], "content": r["content"][:200], "category": r["category"]} for r in c.fetchall()]
-                    conn.close()
-                    return [TextContent(type="text", text=json.dumps({"task_id": task_id, "memories": results}, indent=2))]
+                conn = get_db_connection()
+                c = conn.cursor()
+                c.execute("SELECT m.id, m.content, m.category FROM memories m JOIN task_memory_assignments tma ON m.id = tma.memory_id WHERE tma.task_id = ?", (task_id,))
+                results = [{"id": r["id"], "content": r["content"][:200], "category": r["category"]} for r in c.fetchall()]
+                conn.close()
+                return [TextContent(type="text", text=json.dumps({"task_id": task_id, "memories": results}, indent=2))]
             except Exception as e:
                 return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
 
@@ -3243,205 +2964,19 @@ if MCP_AVAILABLE:
                 return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
 
 
-        # === Beads-inspired tool handlers ===
-        elif name == "add_dependency":
-            sid = int(args.get("source_id", 0))
-            tid = int(args.get("target_id", 0))
-            dt = args.get("dep_type", "related")
-            result = add_dependency(DATABASE_PATH, sid, tid, dt)
-            return [TextContent(type="text", text=json.dumps(result, indent=2))]
-
-        elif name == "get_ready":
-            result = get_ready_memories(DATABASE_PATH, int(args.get("limit", 20)))
-            return [TextContent(type="text", text=json.dumps(result, default=str))]
-
-        elif name == "create_wisp":
-            if not BEADS_AVAILABLE:
-                return [TextContent(type="text", text=json.dumps({"error": "beads features not loaded"}, indent=2))]
-            content = arguments.get("content", "").strip()
-            if not content:
-                raise ValueError("content required")
-            category = arguments.get("category", "observation")
-            ttl_hours = int(arguments.get("ttl_hours", 24))
-            tags = arguments.get("tags", [])
-            result = create_wisp(DATABASE_PATH, content, category, ttl_hours, tags)
-            return [TextContent(type="text", text=json.dumps(result, indent=2))]
-
-        elif name == "squash_wisp":
-            if not BEADS_AVAILABLE:
-                return [TextContent(type="text", text=json.dumps({"error": "beads features not loaded"}, indent=2))]
-            memory_id = arguments.get("memory_id")
-            if memory_id is None:
-                raise ValueError("memory_id required")
-            result = squash_wisp(DATABASE_PATH, memory_id)
-            return [TextContent(type="text", text=json.dumps(result, indent=2))]
-
-        elif name == "burn_wisp":
-            if not BEADS_AVAILABLE:
-                return [TextContent(type="text", text=json.dumps({"error": "beads features not loaded"}, indent=2))]
-            memory_id = arguments.get("memory_id")
-            if memory_id is None:
-                raise ValueError("memory_id required")
-            result = burn_wisp(DATABASE_PATH, memory_id)
-            return [TextContent(type="text", text=json.dumps(result, indent=2))]
-
-        elif name == "gc_wisps":
-            if not BEADS_AVAILABLE:
-                return [TextContent(type="text", text=json.dumps({"error": "beads features not loaded"}, indent=2))]
-            dry_run = bool(arguments.get("dry_run", True))
-            result = gc_wisps(DATABASE_PATH, dry_run)
-            return [TextContent(type="text", text=json.dumps(result, indent=2))]
-
-        elif name == "compact_memory_ai":
-            if not BEADS_AVAILABLE:
-                return [TextContent(type="text", text=json.dumps({"error": "beads features not loaded"}, indent=2))]
-            memory_id = arguments.get("memory_id")
-            if memory_id is None:
-                raise ValueError("memory_id required")
-            model = arguments.get("model")
-            result = compact_memory_ai(DATABASE_PATH, memory_id, model)
-            return [TextContent(type="text", text=json.dumps(result, indent=2))]
-
-        elif name == "set_memory_gate":
-            if not BEADS_AVAILABLE:
-                return [TextContent(type="text", text=json.dumps({"error": "beads features not loaded"}, indent=2))]
-            memory_id = arguments.get("memory_id")
-            if memory_id is None:
-                raise ValueError("memory_id required")
-            gate_type = arguments.get("gate_type", "confirm")
-            approvers = arguments.get("approvers", [])
-            result = set_memory_gate(DATABASE_PATH, memory_id, gate_type, approvers)
-            return [TextContent(type="text", text=json.dumps(result, indent=2))]
-
-        elif name == "resolve_gate":
-            if not BEADS_AVAILABLE:
-                return [TextContent(type="text", text=json.dumps({"error": "beads features not loaded"}, indent=2))]
-            memory_id = arguments.get("memory_id")
-            if memory_id is None:
-                raise ValueError("memory_id required")
-            approved = bool(arguments.get("approved", True))
-            result = resolve_gate(DATABASE_PATH, memory_id, approved)
-            return [TextContent(type="text", text=json.dumps(result, indent=2))]
-
-        elif name == "query_audit_log":
-            if not BEADS_AVAILABLE:
-                return [TextContent(type="text", text=json.dumps({"error": "beads features not loaded"}, indent=2))]
-            kind = arguments.get("kind")
-            since_hours = int(arguments.get("since_hours", 24))
-            limit = int(arguments.get("limit", 50))
-            result = query_audit_log(kind, since_hours, limit)
-            return [TextContent(type="text", text=json.dumps({"entries": result}, indent=2))]
-
-        elif name == "get_workspace_fingerprint":
-            if not BEADS_AVAILABLE:
-                return [TextContent(type="text", text=json.dumps({"error": "beads features not loaded"}, indent=2))]
-            result = {"fingerprint": compute_workspace_fingerprint()}
-            return [TextContent(type="text", text=json.dumps(result, indent=2))]
-        elif name == "add_dependency":
-            sid = int(args.get("source_id", 0))
-            tid = int(args.get("target_id", 0))
-            dt = args.get("dep_type", "related")
-            result = add_dependency(DATABASE_PATH, sid, tid, dt)
-            return [TextContent(type="text", text=json.dumps(result))]
-
-        elif name == "get_ready":
-            result = get_ready_memories(DATABASE_PATH, int(args.get("limit", 20)))
-            return [TextContent(type="text", text=json.dumps(result, default=str))]
-
-        elif name == "create_wisp":
-            result = create_wisp(DATABASE_PATH, args["content"], args.get("category", "observation"), int(args.get("ttl_hours", 24)), args.get("tags", []))
-            return [TextContent(type="text", text=json.dumps(result))]
-
-        elif name == "squash_wisp":
-            result = squash_wisp(DATABASE_PATH, int(args["memory_id"]))
-            return [TextContent(type="text", text=json.dumps(result))]
-
-        elif name == "burn_wisp":
-            result = burn_wisp(DATABASE_PATH, int(args["memory_id"]))
-            return [TextContent(type="text", text=json.dumps(result))]
-
-        elif name == "gc_wisps":
-            result = gc_wisps(DATABASE_PATH, bool(args.get("dry_run", True)))
-            return [TextContent(type="text", text=json.dumps(result))]
-
-        elif name == "compact_memory_ai":
-            result = compact_memory_ai(DATABASE_PATH, int(args["memory_id"]), args.get("model"))
-            return [TextContent(type="text", text=json.dumps(result))]
-
-        elif name == "set_memory_gate":
-            result = set_memory_gate(DATABASE_PATH, int(args["memory_id"]), args.get("gate_type", "confirm"), args.get("approvers", []))
-            return [TextContent(type="text", text=json.dumps(result))]
-
-        elif name == "resolve_gate":
-            result = resolve_gate(DATABASE_PATH, int(args["memory_id"]), bool(args.get("approved", True)))
-            return [TextContent(type="text", text=json.dumps(result))]
-
-        elif name == "query_audit_log":
-            result = query_audit_log(args.get("kind"), int(args.get("since_hours", 24)), int(args.get("limit", 50)))
-            return [TextContent(type="text", text=json.dumps(result, default=str))]
-
-        elif name == "get_workspace_fingerprint":
-            result = {"fingerprint": compute_workspace_fingerprint()}
-            return [TextContent(type="text", text=json.dumps(result))]
-        elif name == "compress_memory":
-            try:
-                memory_id = arguments.get("memory_id")
-                if not memory_id:
-                    return [TextContent(type="text", text=json.dumps({"error": "memory_id required"}, indent=2))]
-                    conn = get_db_connection()
-                    c = conn.cursor()
-                    c.execute("SELECT content FROM memories WHERE id = ?", (memory_id,))
-                    row = c.fetchone()
-                    if not row:
-                        conn.close()
-                        return [TextContent(type="text", text=json.dumps({"error": "memory not found"}, indent=2))]
-                        import zlib
-                        compressed = zlib.compress(row["content"].encode())
-                        c.execute("UPDATE memories SET content = ? WHERE id = ?", (compressed.decode('latin-1'), memory_id))
-                        conn.commit()
-                        conn.close()
-                        return [TextContent(type="text", text=json.dumps({"compressed": True, "id": memory_id, "original_size": len(row["content"]), "compressed_size": len(compressed)}, indent=2))]
-            except Exception as e:
-                return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
-
-        elif name == "decompress_memory":
-            try:
-                memory_id = arguments.get("memory_id")
-                if not memory_id:
-                    return [TextContent(type="text", text=json.dumps({"error": "memory_id required"}, indent=2))]
-                    conn = get_db_connection()
-                    c = conn.cursor()
-                    c.execute("SELECT content FROM memories WHERE id = ?", (memory_id,))
-                    row = c.fetchone()
-                    if not row:
-                        conn.close()
-                        return [TextContent(type="text", text=json.dumps({"error": "memory not found"}, indent=2))]
-                        import zlib
-                        try:
-                            decompressed = zlib.decompress(row["content"].encode('latin-1')).decode()
-                            c.execute("UPDATE memories SET content = ? WHERE id = ?", (decompressed, memory_id))
-                            conn.commit()
-                            conn.close()
-                            return [TextContent(type="text", text=json.dumps({"decompressed": True, "id": memory_id, "size": len(decompressed)}, indent=2))]
-                        except zlib.error:
-                            conn.close()
-                            return [TextContent(type="text", text=json.dumps({"error": "content is not compressed", "id": memory_id}, indent=2))]
-            except Exception as e:
-                return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
-
         elif name == "create_palace":
             try:
                 palace_name = arguments.get("name")
                 description = arguments.get("description", "")
                 if not palace_name:
                     return [TextContent(type="text", text=json.dumps({"error": "name required"}, indent=2))]
-                    conn = get_db_connection()
-                    c = conn.cursor()
-                    c.execute("INSERT INTO memory_palaces (name, description) VALUES (?, ?)", (palace_name, description))
-                    palace_id = c.lastrowid
-                    conn.commit()
-                    conn.close()
-                    return [TextContent(type="text", text=json.dumps({"created": True, "id": palace_id, "name": palace_name}, indent=2))]
+                conn = get_db_connection()
+                c = conn.cursor()
+                c.execute("INSERT INTO memory_palaces (name, description) VALUES (?, ?)", (palace_name, description))
+                palace_id = c.lastrowid
+                conn.commit()
+                conn.close()
+                return [TextContent(type="text", text=json.dumps({"created": True, "id": palace_id, "name": palace_name}, indent=2))]
             except Exception as e:
                 return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
 
@@ -3451,14 +2986,14 @@ if MCP_AVAILABLE:
                 room_name = arguments.get("name")
                 if not palace_id or not room_name:
                     return [TextContent(type="text", text=json.dumps({"error": "palace_id and name required"}, indent=2))]
-                    conn = get_db_connection()
-                    c = conn.cursor()
-                    c.execute("INSERT INTO palace_rooms (palace_id, name, description, position_x, position_y, position_z) VALUES (?, ?, ?, ?, ?, ?)",
-                    (palace_id, room_name, arguments.get("description", ""), arguments.get("position_x", 0), arguments.get("position_y", 0), arguments.get("position_z", 0)))
-                    room_id = c.lastrowid
-                    conn.commit()
-                    conn.close()
-                    return [TextContent(type="text", text=json.dumps({"created": True, "id": room_id, "name": room_name, "palace_id": palace_id}, indent=2))]
+                conn = get_db_connection()
+                c = conn.cursor()
+                c.execute("INSERT INTO palace_rooms (palace_id, name, description, position_x, position_y, position_z) VALUES (?, ?, ?, ?, ?, ?)",
+                          (palace_id, room_name, arguments.get("description", ""), arguments.get("position_x", 0), arguments.get("position_y", 0), arguments.get("position_z", 0)))
+                room_id = c.lastrowid
+                conn.commit()
+                conn.close()
+                return [TextContent(type="text", text=json.dumps({"created": True, "id": room_id, "name": room_name, "palace_id": palace_id}, indent=2))]
             except Exception as e:
                 return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
 
@@ -3468,12 +3003,12 @@ if MCP_AVAILABLE:
                 memory_id = arguments.get("memory_id")
                 if not room_id or not memory_id:
                     return [TextContent(type="text", text=json.dumps({"error": "room_id and memory_id required"}, indent=2))]
-                    conn = get_db_connection()
-                    c = conn.cursor()
-                    c.execute("INSERT OR REPLACE INTO room_memories (room_id, memory_id) VALUES (?, ?)", (room_id, memory_id))
-                    conn.commit()
-                    conn.close()
-                    return [TextContent(type="text", text=json.dumps({"placed": True, "room_id": room_id, "memory_id": memory_id}, indent=2))]
+                conn = get_db_connection()
+                c = conn.cursor()
+                c.execute("INSERT OR REPLACE INTO room_memories (room_id, memory_id) VALUES (?, ?)", (room_id, memory_id))
+                conn.commit()
+                conn.close()
+                return [TextContent(type="text", text=json.dumps({"placed": True, "room_id": room_id, "memory_id": memory_id}, indent=2))]
             except Exception as e:
                 return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
 
@@ -3482,21 +3017,21 @@ if MCP_AVAILABLE:
                 palace_id = arguments.get("palace_id")
                 if not palace_id:
                     return [TextContent(type="text", text=json.dumps({"error": "palace_id required"}, indent=2))]
-                    conn = get_db_connection()
-                    c = conn.cursor()
-                    c.execute("SELECT id, name, description FROM memory_palaces WHERE id = ?", (palace_id,))
-                    palace = c.fetchone()
-                    if not palace:
-                        conn.close()
-                        return [TextContent(type="text", text=json.dumps({"error": "palace not found"}, indent=2))]
-                        c.execute("SELECT id, name, description, position_x, position_y, position_z FROM palace_rooms WHERE palace_id = ?", (palace_id,))
-                        rooms = []
-                        for room in c.fetchall():
-                            c.execute("SELECT m.id, m.content FROM memories m JOIN room_memories rm ON m.id = rm.memory_id WHERE rm.room_id = ?", (room["id"],))
-                            room_mems = [{"id": r["id"], "content": r["content"][:100]} for r in c.fetchall()]
-                            rooms.append({"id": room["id"], "name": room["name"], "description": room["description"], "position": {"x": room["position_x"], "y": room["position_y"], "z": room["position_z"]}, "memories": room_mems})
-                            conn.close()
-                            return [TextContent(type="text", text=json.dumps({"palace": {"id": palace["id"], "name": palace["name"], "description": palace["description"]}, "rooms": rooms}, indent=2))]
+                conn = get_db_connection()
+                c = conn.cursor()
+                c.execute("SELECT id, name, description FROM memory_palaces WHERE id = ?", (palace_id,))
+                palace = c.fetchone()
+                if not palace:
+                    conn.close()
+                    return [TextContent(type="text", text=json.dumps({"error": "palace not found"}, indent=2))]
+                c.execute("SELECT id, name, description, position_x, position_y, position_z FROM palace_rooms WHERE palace_id = ?", (palace_id,))
+                rooms = []
+                for room in c.fetchall():
+                    c.execute("SELECT m.id, m.content FROM memories m JOIN room_memories rm ON m.id = rm.memory_id WHERE rm.room_id = ?", (room["id"],))
+                    room_mems = [{"id": r["id"], "content": r["content"][:100]} for r in c.fetchall()]
+                    rooms.append({"id": room["id"], "name": room["name"], "description": room["description"], "position": {"x": room["position_x"], "y": room["position_y"], "z": room["position_z"]}, "memories": room_mems})
+                conn.close()
+                return [TextContent(type="text", text=json.dumps({"palace": {"id": palace["id"], "name": palace["name"], "description": palace["description"]}, "rooms": rooms}, indent=2))]
             except Exception as e:
                 return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
 
@@ -3505,14 +3040,14 @@ if MCP_AVAILABLE:
                 title = arguments.get("title")
                 if not title:
                     return [TextContent(type="text", text=json.dumps({"error": "title required"}, indent=2))]
-                    conn = get_db_connection()
-                    c = conn.cursor()
-                    c.execute("INSERT INTO narrative_arcs (title, description, arc_type, status) VALUES (?, ?, ?, 'ongoing')",
-                    (title, arguments.get("description", ""), arguments.get("arc_type", "manual")))
-                    arc_id = c.lastrowid
-                    conn.commit()
-                    conn.close()
-                    return [TextContent(type="text", text=json.dumps({"created": True, "id": arc_id, "title": title}, indent=2))]
+                conn = get_db_connection()
+                c = conn.cursor()
+                c.execute("INSERT INTO narrative_arcs (title, description, arc_type, status) VALUES (?, ?, ?, 'ongoing')",
+                          (title, arguments.get("description", ""), arguments.get("arc_type", "manual")))
+                arc_id = c.lastrowid
+                conn.commit()
+                conn.close()
+                return [TextContent(type="text", text=json.dumps({"created": True, "id": arc_id, "title": title}, indent=2))]
             except Exception as e:
                 return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
 
@@ -3522,13 +3057,13 @@ if MCP_AVAILABLE:
                 memory_id = arguments.get("memory_id")
                 if not arc_id or not memory_id:
                     return [TextContent(type="text", text=json.dumps({"error": "arc_id and memory_id required"}, indent=2))]
-                    conn = get_db_connection()
-                    c = conn.cursor()
-                    c.execute("INSERT INTO arc_memories (arc_id, memory_id, arc_role) VALUES (?, ?, ?)",
-                    (arc_id, memory_id, arguments.get("arc_role", "event")))
-                    conn.commit()
-                    conn.close()
-                    return [TextContent(type="text", text=json.dumps({"added": True, "arc_id": arc_id, "memory_id": memory_id}, indent=2))]
+                conn = get_db_connection()
+                c = conn.cursor()
+                c.execute("INSERT INTO arc_memories (arc_id, memory_id, arc_role) VALUES (?, ?, ?)",
+                          (arc_id, memory_id, arguments.get("arc_role", "event")))
+                conn.commit()
+                conn.close()
+                return [TextContent(type="text", text=json.dumps({"added": True, "arc_id": arc_id, "memory_id": memory_id}, indent=2))]
             except Exception as e:
                 return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
 
@@ -3537,12 +3072,12 @@ if MCP_AVAILABLE:
                 arc_id = arguments.get("arc_id")
                 if not arc_id:
                     return [TextContent(type="text", text=json.dumps({"error": "arc_id required"}, indent=2))]
-                    conn = get_db_connection()
-                    c = conn.cursor()
-                    c.execute("SELECT m.id, m.content, m.created_at, am.arc_role FROM memories m JOIN arc_memories am ON m.id = am.memory_id WHERE am.arc_id = ? ORDER BY m.created_at", (arc_id,))
-                    results = [{"id": r["id"], "content": r["content"][:200], "created_at": r["created_at"], "arc_role": r["arc_role"]} for r in c.fetchall()]
-                    conn.close()
-                    return [TextContent(type="text", text=json.dumps({"arc_id": arc_id, "timeline": results}, indent=2))]
+                conn = get_db_connection()
+                c = conn.cursor()
+                c.execute("SELECT m.id, m.content, m.t_event, am.arc_role FROM memories m JOIN arc_memories am ON m.id = am.memory_id WHERE am.arc_id = ? ORDER BY m.t_event", (arc_id,))
+                results = [{"id": r["id"], "content": r["content"][:200], "t_event": r["t_event"], "arc_role": r["arc_role"]} for r in c.fetchall()]
+                conn.close()
+                return [TextContent(type="text", text=json.dumps({"arc_id": arc_id, "timeline": results}, indent=2))]
             except Exception as e:
                 return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
 
@@ -3556,12 +3091,15 @@ if MCP_AVAILABLE:
                     query += " WHERE status = ?"
                     params.append(arguments["status"])
                     if arguments.get("arc_type"):
-                        query += " WHERE arc_type = ?"
+                        query += " AND arc_type = ?"
                         params.append(arguments["arc_type"])
-                        c.execute(query, params)
-                        results = [{"id": r["id"], "title": r["title"], "description": r["description"], "arc_type": r["arc_type"], "status": r["status"]} for r in c.fetchall()]
-                        conn.close()
-                        return [TextContent(type="text", text=json.dumps({"count": len(results), "arcs": results}, indent=2))]
+                elif arguments.get("arc_type"):
+                    query += " WHERE arc_type = ?"
+                    params.append(arguments["arc_type"])
+                c.execute(query, params)
+                results = [{"id": r["id"], "title": r["title"], "description": r["description"], "arc_type": r["arc_type"], "status": r["status"]} for r in c.fetchall()]
+                conn.close()
+                return [TextContent(type="text", text=json.dumps({"count": len(results), "arcs": results}, indent=2))]
             except Exception as e:
                 return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
 
@@ -3570,12 +3108,12 @@ if MCP_AVAILABLE:
                 arc_id = arguments.get("arc_id")
                 if not arc_id:
                     return [TextContent(type="text", text=json.dumps({"error": "arc_id required"}, indent=2))]
-                    conn = get_db_connection()
-                    c = conn.cursor()
-                    c.execute("UPDATE narrative_arcs SET status = 'completed' WHERE id = ?", (arc_id,))
-                    conn.commit()
-                    conn.close()
-                    return [TextContent(type="text", text=json.dumps({"completed": True, "id": arc_id}, indent=2))]
+                conn = get_db_connection()
+                c = conn.cursor()
+                c.execute("UPDATE narrative_arcs SET status = 'completed' WHERE id = ?", (arc_id,))
+                conn.commit()
+                conn.close()
+                return [TextContent(type="text", text=json.dumps({"completed": True, "id": arc_id}, indent=2))]
             except Exception as e:
                 return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
 
@@ -3585,48 +3123,14 @@ if MCP_AVAILABLE:
                 memory_ids = arguments.get("memory_ids", [])
                 if not content:
                     return [TextContent(type="text", text=json.dumps({"error": "content required"}, indent=2))]
-                    conn = get_db_connection()
-                    c = conn.cursor()
-                    c.execute("INSERT INTO conclusions (content, confidence, status, source_memory_ids) VALUES (?, ?, 'pending', ?)",
-                    (content, arguments.get("confidence", 0.5), json.dumps(memory_ids)))
-                    conclusion_id = c.lastrowid
-                    conn.commit()
-                    conn.close()
-                    return [TextContent(type="text", text=json.dumps({"created": True, "id": conclusion_id, "content": content}, indent=2))]
-            except Exception as e:
-                return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
-
-        elif name == "validate_conclusion":
-            try:
-                conclusion_id = arguments.get("conclusion_id")
-                if not conclusion_id:
-                    return [TextContent(type="text", text=json.dumps({"error": "conclusion_id required"}, indent=2))]
-                    still_valid = arguments.get("still_valid", True)
-                    conn = get_db_connection()
-                    c = conn.cursor()
-                    status = "confirmed" if still_valid else "rejected"
-                    c.execute("UPDATE conclusions SET status = ?, notes = ? WHERE id = ?", (status, arguments.get("notes", ""), conclusion_id))
-                    conn.commit()
-                    conn.close()
-                    return [TextContent(type="text", text=json.dumps({"validated": True, "id": conclusion_id, "status": status}, indent=2))]
-            except Exception as e:
-                return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
-
-        elif name == "get_conclusions":
-            try:
                 conn = get_db_connection()
                 c = conn.cursor()
-                query = "SELECT id, content, confidence, status, created_at FROM conclusions"
-                params = []
-                if arguments.get("status"):
-                    query += " WHERE status = ?"
-                    params.append(arguments["status"])
-                    query += " ORDER BY created_at DESC LIMIT ?"
-                    params.append(arguments.get("limit", 10))
-                    c.execute(query, params)
-                    results = [{"id": r["id"], "content": r["content"], "confidence": r["confidence"], "status": r["status"], "created_at": r["created_at"]} for r in c.fetchall()]
-                    conn.close()
-                    return [TextContent(type="text", text=json.dumps({"count": len(results), "conclusions": results}, indent=2))]
+                c.execute("INSERT INTO conclusions (content, confidence, status, source_memory_ids) VALUES (?, ?, 'pending', ?)",
+                          (content, arguments.get("confidence", 0.5), json.dumps(memory_ids)))
+                conclusion_id = c.lastrowid
+                conn.commit()
+                conn.close()
+                return [TextContent(type="text", text=json.dumps({"created": True, "id": conclusion_id, "content": content}, indent=2))]
             except Exception as e:
                 return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
 
@@ -3635,14 +3139,14 @@ if MCP_AVAILABLE:
                 peer_url = arguments.get("peer_url")
                 if not peer_url:
                     return [TextContent(type="text", text=json.dumps({"error": "peer_url required"}, indent=2))]
-                    conn = get_db_connection()
-                    c = conn.cursor()
-                    c.execute("INSERT INTO federation_peers (peer_url, peer_name, auth_token, sync_direction, status) VALUES (?, ?, ?, ?, 'active')",
-                    (peer_url, arguments.get("peer_name", ""), arguments.get("auth_token", ""), arguments.get("sync_direction", "bidirectional")))
-                    peer_id = c.lastrowid
-                    conn.commit()
-                    conn.close()
-                    return [TextContent(type="text", text=json.dumps({"registered": True, "id": peer_id, "url": peer_url}, indent=2))]
+                conn = get_db_connection()
+                c = conn.cursor()
+                c.execute("INSERT INTO federation_peers (peer_url, peer_name, auth_token, sync_direction, status) VALUES (?, ?, ?, ?, 'active')",
+                          (peer_url, arguments.get("peer_name", ""), arguments.get("auth_token", ""), arguments.get("sync_direction", "bidirectional")))
+                peer_id = c.lastrowid
+                conn.commit()
+                conn.close()
+                return [TextContent(type="text", text=json.dumps({"registered": True, "id": peer_id, "url": peer_url}, indent=2))]
             except Exception as e:
                 return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
 
@@ -3655,10 +3159,10 @@ if MCP_AVAILABLE:
                 if arguments.get("status"):
                     query += " WHERE status = ?"
                     params.append(arguments["status"])
-                    c.execute(query, params)
-                    results = [{"id": r["id"], "url": r["peer_url"], "name": r["peer_name"], "direction": r["sync_direction"], "status": r["status"], "last_sync": r["last_sync"]} for r in c.fetchall()]
-                    conn.close()
-                    return [TextContent(type="text", text=json.dumps({"count": len(results), "peers": results}, indent=2))]
+                c.execute(query, params)
+                results = [{"id": r["id"], "url": r["peer_url"], "name": r["peer_name"], "direction": r["sync_direction"], "status": r["status"], "last_sync": r["last_sync"]} for r in c.fetchall()]
+                conn.close()
+                return [TextContent(type="text", text=json.dumps({"count": len(results), "peers": results}, indent=2))]
             except Exception as e:
                 return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
 
@@ -3667,14 +3171,14 @@ if MCP_AVAILABLE:
                 peer_id = arguments.get("peer_id")
                 if not peer_id:
                     return [TextContent(type="text", text=json.dumps({"error": "peer_id required"}, indent=2))]
-                    conn = get_db_connection()
-                    c = conn.cursor()
-                    c.execute("SELECT peer_url, auth_token, sync_direction FROM federation_peers WHERE id = ?", (peer_id,))
-                    peer = c.fetchone()
-                    conn.close()
-                    if not peer:
-                        return [TextContent(type="text", text=json.dumps({"error": "peer not found"}, indent=2))]
-                        return [TextContent(type="text", text=json.dumps({"sync_result": "stub", "peer_id": peer_id, "direction": arguments.get("direction", peer["sync_direction"])}, indent=2))]
+                conn = get_db_connection()
+                c = conn.cursor()
+                c.execute("SELECT peer_url, auth_token, sync_direction FROM federation_peers WHERE id = ?", (peer_id,))
+                peer = c.fetchone()
+                conn.close()
+                if not peer:
+                    return [TextContent(type="text", text=json.dumps({"error": "peer not found"}, indent=2))]
+                return [TextContent(type="text", text=json.dumps({"sync_result": "not_implemented", "peer_id": peer_id, "direction": arguments.get("direction", peer["sync_direction"]), "note": "federation sync not yet implemented"}, indent=2))]
             except Exception as e:
                 return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
 
@@ -3754,16 +3258,16 @@ if MCP_AVAILABLE:
                 memory_id = arguments.get("memory_id")
                 if memory_id is None:
                     return [TextContent(type="text", text=json.dumps({"error": "memory_id required"}, indent=2))]
-                    observation = arguments.get("observation_result", True)
-                    conn = get_db_connection()
-                    c = conn.cursor()
-                    if observation:
-                        c.execute("UPDATE memories SET importance = MIN(importance + 0.1, 1.0) WHERE id = ?", (memory_id,))
-                    else:
-                        c.execute("UPDATE memories SET importance = MAX(importance - 0.2, 0.0), decay_score = MIN(decay_score + 0.15, 1.0) WHERE id = ?", (memory_id,))
-                        conn.commit()
-                        conn.close()
-                        return [TextContent(type="text", text=json.dumps({"updated": True, "id": memory_id, "observation_confirmed": observation}, indent=2))]
+                observation = arguments.get("observation_result", True)
+                conn = get_db_connection()
+                c = conn.cursor()
+                if observation:
+                    c.execute("UPDATE memories SET importance = MIN(importance + 0.1, 1.0) WHERE id = ?", (memory_id,))
+                else:
+                    c.execute("UPDATE memories SET importance = MAX(importance - 0.2, 0.0), decay_score = MIN(decay_score + 0.15, 1.0) WHERE id = ?", (memory_id,))
+                conn.commit()
+                conn.close()
+                return [TextContent(type="text", text=json.dumps({"updated": True, "id": memory_id, "observation_confirmed": observation}, indent=2))]
             except Exception as e:
                 return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
 
@@ -3801,13 +3305,6 @@ if MCP_AVAILABLE:
         elif name == "unified_briefing":
             try:
                 result = unified_briefing(context=arguments.get("context", ""), max_items=arguments.get("max_items", 15))
-                return [TextContent(type="text", text=json.dumps(result, indent=2))]
-            except Exception as e:
-                return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
-
-        elif name == "get_activity_summary":
-            try:
-                result = get_activity_summary(hours=arguments.get("hours", 2))
                 return [TextContent(type="text", text=json.dumps(result, indent=2))]
             except Exception as e:
                 return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
@@ -4121,31 +3618,6 @@ if MCP_AVAILABLE:
             except Exception as e:
                 return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
 
-        elif name == "set_temporal_bounds":
-            try:
-                memory_id = arguments.get("memory_id")
-                if V4_AVAILABLE:
-                    result = set_temporal_bounds_v4(memory_id, valid_from=arguments.get("valid_from"), valid_to=arguments.get("valid_to"), observed_at=arguments.get("observed_at"))
-                else:
-                    conn = get_db_connection()
-                    c = conn.cursor()
-                    updates = []
-                    params = []
-                    for field in ["valid_from", "valid_to", "observed_at"]:
-                        if arguments.get(field):
-                            updates.append(f"{field} = ?")
-                            params.append(arguments[field])
-                    if updates:
-                        c.execute(f"UPDATE memories SET {', '.join(updates)} WHERE id = ?", params + [memory_id])
-                        conn.commit()
-                    conn.close()
-                    result = {"memory_id": memory_id, "updated": True, "note": "basic fallback"}
-                return [TextContent(type="text", text=json.dumps(result, indent=2))]
-            except Exception as e:
-                return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
-
-
-
         elif name == "create_wisp":
             if not BEADS_AVAILABLE:
                 return [TextContent(type="text", text=json.dumps({"error": "beads features not loaded"}, indent=2))]
@@ -4290,25 +3762,47 @@ if MCP_AVAILABLE:
         # Spaced Repetition tool handlers
         # ================================
         elif name == "schedule_review":
-            result = schedule_review(DATABASE_PATH, int(args["memory_id"]), int(args.get("quality", 3)))
-            return [TextContent(type="text", text=json.dumps(result))]
+            try:
+                result = schedule_review(int(arguments["memory_id"]), int(arguments.get("quality", 3)), db_path=DATABASE_PATH)
+                return [TextContent(type="text", text=json.dumps(result, indent=2))]
+            except Exception as e:
+                return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
 
         elif name == "get_due_reviews":
-            result = get_due_reviews(DATABASE_PATH, int(args.get("days", 7)), args.get("tag"))
-            return [TextContent(type="text", text=json.dumps(result, default=str))]
+            try:
+                days = int(arguments.get("days", 7))
+                from datetime import date, timedelta
+                target = (date.today() + timedelta(days=days)).isoformat()
+                result = get_due_reviews(db_path=DATABASE_PATH, date_str=target, limit=50)
+                return [TextContent(type="text", text=json.dumps(result, default=str, indent=2))]
+            except Exception as e:
+                return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
 
         elif name == "batch_review":
-            reviews = json.loads(args.get("reviews", "[]"))
-            results = [schedule_review(DATABASE_PATH, int(r["memory_id"]), int(r.get("quality", 3))) for r in reviews]
-            return [TextContent(type="text", text=json.dumps(results, default=str))]
+            try:
+                reviews = arguments.get("reviews", [])
+                results = [schedule_review(int(r["memory_id"]), int(r.get("quality", 3)), db_path=DATABASE_PATH) for r in reviews]
+                return [TextContent(type="text", text=json.dumps(results, default=str, indent=2))]
+            except Exception as e:
+                return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
 
         elif name == "predict_retention":
-            result = predict_retention(DATABASE_PATH, int(args["memory_id"]), int(args.get("days", 30)))
-            return [TextContent(type="text", text=json.dumps(result))]
+            try:
+                from datetime import date, timedelta
+                memory_id = int(arguments["memory_id"])
+                days = int(arguments.get("days", 30))
+                future = date.today() + timedelta(days=days)
+                result = predict_retention(memory_id, future, db_path=DATABASE_PATH)
+                return [TextContent(type="text", text=json.dumps({"memory_id": memory_id, "days_ahead": days, "predicted_retention": result}, indent=2))]
+            except Exception as e:
+                return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
 
         elif name == "auto_schedule_important":
-            result = auto_schedule_important(DATABASE_PATH, int(args.get("limit", 20)), args.get("tag"))
-            return [TextContent(type="text", text=json.dumps(result, default=str))]
+            try:
+                result = auto_schedule_important(db_path=DATABASE_PATH, max_count=int(arguments.get("limit", 100)))
+                return [TextContent(type="text", text=json.dumps(result, default=str, indent=2))]
+            except Exception as e:
+                return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
 
         elif name in (
             "rate_memory_helpful",
@@ -4322,6 +3816,7 @@ if MCP_AVAILABLE:
             "replay_events",
         ):
             result = call_phase2_tool(name, arguments)
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
         elif name == "compute_workspace_fingerprint":
             if not BEADS_AVAILABLE:
                 return [TextContent(type="text", text=json.dumps({"error": "beads features not loaded"}, indent=2))]

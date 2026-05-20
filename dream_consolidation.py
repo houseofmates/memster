@@ -5,6 +5,7 @@ Invoked by memster-dream.service systemd timer. Performs offline memory
 consolidation: decay-based cleanup, pattern discovery, cross-session linking.
 """
 
+import math
 import sys
 import sqlite3
 from datetime import datetime, timedelta
@@ -39,7 +40,6 @@ def sleep_consolidate(db_path=None, batch_size=100):
     decayed = 0
     for mem_id, decay_score, access_count in eligible:
         # Decay rate = base / (1 + log(access_count))
-        import math
         decay_factor = 1.0 / (1 + math.log(access_count + 1))
         new_decay = decay_score * (0.5 + 0.5 * decay_factor)
         
@@ -52,15 +52,15 @@ def sleep_consolidate(db_path=None, batch_size=100):
     
     results["decayed"] = decayed
     
-    # Promote hot memories (accessed > 10 times, tier L0/L1 -> higher tier)
+    # Promote hot memories (accessed > 10 times) up to L0 (highest tier)
     c.execute("""
         SELECT id FROM memories
-        WHERE access_count > 10 AND tier IN ('L0', 'L1')
+        WHERE access_count > 10 AND tier NOT IN ('L0')
     """)
     hot = c.fetchall()
     promoted = 0
     for (mem_id,) in hot:
-        c.execute("UPDATE memories SET tier = 'L3' WHERE id = ?", (mem_id,))
+        c.execute("UPDATE memories SET tier = 'L0' WHERE id = ?", (mem_id,))
         promoted += 1
     results["promoted"] = promoted
     
