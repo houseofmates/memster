@@ -4,9 +4,12 @@ a local-first, long-term memory system for hermes agent. it provides persistent 
 
 <h2 align="center">features</h2>
 
-- **persistent memory** — stores memories in a postgresql database with full-text search and vector embeddings for semantic recall
+- **persistent memory** — stores memories in a postgresql database with full-text search (tsvector/gin) and vector embeddings for semantic recall
 - **four-network model** — organizes memories into world, experience, opinion, and observation networks for structured recall
 - **mcp integration** — exposes memory functions via model context protocol for seamless integration with hermes and other agents
+- **auto importance scoring** — automatically scores memory importance (0.0-1.0) based on content signals like entities, errors, length, and action/outcome pairs
+- **conflict detection** — detects semantic conflicts (opposite states like "service is up" vs "service is down") before inserting new memories, returning warnings without blocking
+- **pg_trgm duplicate detection** — uses postgresql's pg_trgm extension for O(log n) near-duplicate detection instead of O(n^2) python comparison
 - **dream system** — database-integrated dream system that processes memories during idle periods to reinforce learning
 - **semantic enhancements** — includes 9 semantic intelligence improvements for better understanding and association
 - **self-evolution capabilities** — uses memster's own data to evaluate and improve its memory processes
@@ -20,8 +23,9 @@ memster is designed to run alongside hermes agent. it requires postgresql and py
 
 <h3 align="center">prerequisites</h3>
 
-- postgresql 13+ (or use docker)
+- postgresql 14+ (required — sqlite is no longer supported)
 - python 3.11 or higher
+- psycopg2 (installed automatically with `pip install -e .[all]`)
 - git
 
 <h3 align="center">setup</h3>
@@ -32,27 +36,32 @@ memster is designed to run alongside hermes agent. it requires postgresql and py
    cd memster
    ```
 
-2. install dependencies
+2. create the postgresql database
+   ```bash
+   sudo -u postgres createdb memster
+   sudo -u postgres psql -c "CREATE USER memster WITH PASSWORD 'your_password';"
+   sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE memster TO memster;"
+   ```
+
+3. install dependencies
    ```bash
    python3 -m venv .venv
    source .venv/bin/activate
    pip install -e .[all]
    ```
 
-3. configure the database
-   - ensure postgresql is running
-   - create a database and user for memster
-   - copy `.env.example` to `.env` and fill in the connection details
-   - run the schema migrations
-     ```bash
-     alembic upgrade head
-     ```
+4. configure the database
+   - copy `.env.example` to `.env` and set `DATABASE_URL`
+   ```bash
+   cp .env.example .env
+   # Edit .env: DATABASE_URL=postgresql://memster:your_password@localhost:5432/memster
+   ```
 
-4. start the memster mcp server
+5. start the memster mcp server
    ```bash
    python memster_mcp_server.py
    ```
-   the server will run on http://localhost:8000 by default
+   the server runs over stdio (mcp protocol).
 
 <h2 align="center">usage</h2>
 
@@ -61,21 +70,37 @@ once the memster server is running, hermes agent can connect to it via the mcp i
 ```yaml
 mcp_servers:
   memster:
-    url: http://localhost:8000
+    command: python
+    args: ["/path/to/memster/memster_mcp_server.py"]
 ```
 
 memster provides the following tools through mcp:
-- `memster_curate` — store a new memory
-- `memster_remember` — retrieve memories by content
-- `memster_query` — search memories with full-text search
+- `memster_curate` / `memster_remember` — store a new memory with auto-dedup, importance scoring, and conflict detection
+- `memster_query` — search memories with full-text search (tsvector)
 - `memster_status` — get system status and memory count
-- and more for dream system, activity tracking, etc.
+- `memster_embeddings_status` — check embedding backend status and setup instructions
+- `hybrid_search` — hybrid ranking combining vector similarity, full-text, and importance
+- `find_duplicates` — find near-duplicate memories using pg_trgm
+- and many more for dream system, activity tracking, spaced repetition, etc.
+
+<h3 align="center">new features</h3>
+
+**auto importance scoring** — memories are automatically scored 0.0-1.0 based on:
+- network type baseline (world: 0.6, experience: 0.5, observation: 0.4)
+- presence of specific entities (IPs, paths, ports, URLs)
+- error/failure keywords
+- content length
+- action + outcome pair detection
+
+**conflict detection** — before inserting a memory, memster checks for semantic conflicts in the same network type. for example, if you store "service nginx is up", memster will warn if there's an existing memory saying "service nginx is down". conflicts are returned as warnings — they never block insertion.
+
+**embeddings status** — the `memster_embeddings_status` tool reports whether nvidia nim embeddings are available and provides setup instructions if not.
 
 <h2 align="center">architecture</h2>
 
 memster consists of several core components:
 
-- **memster_mcp_server.py** — the main mcp server that exposes memory functions
+- **memster_mcp_server.py** — the main mcp server that exposes memory functions (postgresql backend)
 - **memster_beads.py** — defines the memory bead structure and networks
 - **memster_gbrain.py** — the global brain that coordinates memory operations
 - **memster_spaced_repetition.py** — implements spaced repetition for memory retention
@@ -84,10 +109,11 @@ memster consists of several core components:
 - **memster_phase2.py** — phase 2 enhancements for the memory system
 
 the system uses a postgresql database with the following tables:
-- `memories` — stores individual memory beads
-- `memory_networks` — defines the four networks (world, experience, opinion, observation)
-- `dream_cycles` — tracks dream system activity
-- `activity_log` — logs user interactions for activity tracking
+- `memories` — stores individual memory beads with tsvector full-text search and gin index
+- `memory_edges` — graph edges connecting related memories
+- `memory_embeddings` — nvidia nim vector embeddings for semantic search
+- `entities` — extracted entities (ips, paths, service names, etc.)
+- and more for sessions, tasks, narrative arcs, memory palaces, etc.
 
 <h2 align="center">contributing</h2>
 

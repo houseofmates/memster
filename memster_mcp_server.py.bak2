@@ -316,10 +316,10 @@ def word_overlap(a, b):
 # === passive capture filter ===
 
 NOISE_PATTERNS = [
-    r'^copied:\s*\n%s(Layout was forced|ElementHandle|Timeout \d+ms|npm error)',
+    r'^copied:\s*\n?(Layout was forced|ElementHandle|Timeout \d+ms|npm error)',
     r'^screen showed:.*File Edit Selection View',
-    r'^copied:\s*\n%s\[vite\]',
-    r'^copied:\s*\n%s(are there any improvements|what do you think)',
+    r'^copied:\s*\n?\[vite\]',
+    r'^copied:\s*\n?(are there any improvements|what do you think)',
 ]
 
 def is_noise_capture(content):
@@ -343,7 +343,7 @@ def extract_meaning_from_capture(content, source_type):
         content = content[7:].strip()
     if content.startswith("screen showed:"):
         content = content[14:].strip()
-    error_match = re.search(r'(error|Error|ERROR)[:\s]+(.+%s)(%s:\n|$)', content)
+    error_match = re.search(r'(error|Error|ERROR)[:\s]+(.+?)(?:\n|$)', content)
     if error_match:
         return f"error encountered: {error_match.group(2).strip()[:100]}"
     path_match = re.search(r'(/[\w/.-]+\.\w{1,5})', content)
@@ -496,13 +496,13 @@ def get_memories_with_scoring(query_text=None, tier=None, category=None, max_res
 
     where, params = [], []
     if tier:
-        where.append("tier = %s")
+        where.append("tier = ?")
         params.append(tier)
     if category:
-        where.append("category = %s")
+        where.append("category = ?")
         params.append(category)
     if query_text:
-        where.append("content LIKE %s")
+        where.append("content LIKE ?")
         params.append("%" + query_text + "%")
 
     where_clause = " AND ".join(where) if where else "1=1"
@@ -513,7 +513,7 @@ def get_memories_with_scoring(query_text=None, tier=None, category=None, max_res
     FROM memories 
     WHERE {where_clause}
     ORDER BY relevance_score DESC, access_count DESC
-    LIMIT %s
+    LIMIT ?
     """
     params.append(max_results)
     cursor.execute(sql, params)
@@ -536,7 +536,7 @@ def get_recent_activity(hours=1, limit=50):
                    (cutoff, limit))
     windows = [dict(r) for r in cursor.fetchall()]
     cursor.execute("""SELECT window_class, SUM(duration_seconds) as total_seconds, COUNT(*) as event_count 
-                     FROM window_events WHERE timestamp > %s GROUP BY window_class ORDER BY total_seconds DESC""", (cutoff,))
+                     FROM window_events WHERE timestamp > ? GROUP BY window_class ORDER BY total_seconds DESC""", (cutoff,))
     apps = [{"app": r["window_class"], "minutes": (r["total_seconds"] or 0) // 60} for r in cursor.fetchall()]
     cursor.execute("SELECT content_preview, source_app, timestamp FROM clipboard_events WHERE timestamp > %s ORDER BY timestamp DESC LIMIT %s", 
                    (cutoff, 20))
@@ -554,7 +554,7 @@ def search_window_history(query, hours=24, limit=20):
     cutoff = (datetime.now() - timedelta(hours=hours)).isoformat()
     cursor.execute("""SELECT window_class, window_title, timestamp, duration_seconds 
                      FROM window_events WHERE timestamp > %s AND window_title LIKE %s 
-                     ORDER BY timestamp DESC LIMIT %s""", (cutoff, "%" + query + "%", limit))
+                     ORDER BY timestamp DESC LIMIT ?""", (cutoff, "%" + query + "%", limit))
     results = [dict(r) for r in cursor.fetchall()]
     conn.close()
     return {"query": query, "matches": len(results), "results": results}
@@ -617,7 +617,7 @@ TEMPORAL_PATTERNS = {
     ],
     "valid_to": [
         r"until\s+(\d{4}-\d{2}-\d{2}|\w+\s+\d+|\d+\s+\w+)",
-        r"expires%s\s+(\w+\s+\d+)",
+        r"expires?\s+(\w+\s+\d+)",
         r"deprecated\s+since",
         r"no longer\s+(running|active|used)",
     ],
@@ -653,9 +653,9 @@ ENTITY_PATTERNS = {
     "ip": r"\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}",
     "path": r"/[\w/.-]+\.\w{1,10}",
     "port": r":\d{2,5}",
-    "url": r"https%s://[^\s]+",
-    "package": r"\w+-\w+(%s:-\w+)*",
-    "service": r"\b(%s:server|container|docker|service|daemon|service)\b",
+    "url": r"https?://[^\s]+",
+    "package": r"\w+-\w+(?:-\w+)*",
+    "service": r"\b(?:server|container|docker|service|daemon|service)\b",
 }
 
 
@@ -746,13 +746,13 @@ def check_memory_completeness(content: str, network_type: str = "observation") -
             score += 1
         elif has_error and not has_action:
             issues.append("missing_action")
-            suggestions.append("what action was taken to fix or investigate%s")
+            suggestions.append("what action was taken to fix or investigate?")
         elif has_action and not (has_outcome or has_error):
             issues.append("missing_outcome")
-            suggestions.append("what was the result of this action%s")
+            suggestions.append("what was the result of this action?")
 
     # 4. Check for time references
-    has_time = re.search(r"\d{4}|\d+\s+(%s:hour|day|week|month|year|minute|second)", content_lower)
+    has_time = re.search(r"\d{4}|\d+\s+(?:hour|day|week|month|year|minute|second)", content_lower)
     has_date = re.search(r"\d{4}-\d{2}-\d{2}|\w+\s+\d{1,2}|yesterday|today|now", content_lower)
     if has_time or has_date:
         score += 1
@@ -762,7 +762,7 @@ def check_memory_completeness(content: str, network_type: str = "observation") -
 
     # 5. Check for vagueness (generic words that could be about anything)
     vague_words = ["it", "that", "this", "something", "stuff", "things"]
-    vague_ratio = sum(1 for w in content.split() if w.lower().strip(",.!%s") in vague_words) / max(word_count, 1)
+    vague_ratio = sum(1 for w in content.split() if w.lower().strip(",.!?") in vague_words) / max(word_count, 1)
     if vague_ratio > 0.3:
         issues.append("too_vague")
         suggestions.append("replace generic words like 'it' or 'stuff' with specific nouns")
@@ -803,7 +803,7 @@ def auto_score_importance(content: str, network_type: str) -> float:
         score += 0.1
     if re.search(r':\d{2,5}', content):
         score += 0.1
-    if re.search(r'https%s://', content):
+    if re.search(r'https?://', content):
         score += 0.15
 
     # Error/failure keywords
@@ -860,9 +860,9 @@ def get_cross_session_context(topic: str, limit: int = 5, hours: int = 365) -> D
         SELECT id, session_id, summary, started_at, primary_fronter_name, topics, memory_count
         FROM sessions
         WHERE (topics LIKE %s OR summary LIKE %s)
-          AND started_at > %s
+          AND started_at > ?
         ORDER BY started_at DESC
-        LIMIT %s
+        LIMIT ?
     """, (f"%{topic}%", f"%{topic}%", cutoff, limit))
 
     sessions = [dict(r) for r in cursor.fetchall()]
@@ -875,9 +875,9 @@ def get_cross_session_context(topic: str, limit: int = 5, hours: int = 365) -> D
         JOIN sessions s ON m.conversation_id = s.session_id
         WHERE m.content LIKE %s
           AND m.conversation_id IS NOT NULL
-          AND s.started_at > %s
+          AND s.started_at > ?
         ORDER BY m.t_event DESC
-        LIMIT %s
+        LIMIT ?
     """, (f"%{topic}%", cutoff, limit))
 
     related_memories = [dict(r) for r in cursor.fetchall()]
@@ -908,16 +908,16 @@ def auto_generate_session_digest(session_id: str = None, limit: int = 20) -> str
         cursor.execute("""
             SELECT content, network_type, t_event, fronter_name
             FROM memories
-            WHERE conversation_id = %s
+            WHERE conversation_id = ?
             ORDER BY t_event DESC
-            LIMIT %s
+            LIMIT ?
         """, (session_id, limit))
     else:
         cursor.execute("""
             SELECT content, network_type, t_event, fronter_name
             FROM memories
             ORDER BY t_recorded DESC
-            LIMIT %s
+            LIMIT ?
         """, (limit,))
 
     memories = [dict(r) for r in cursor.fetchall()]
@@ -973,7 +973,7 @@ def store_session_wrap(session_notes: str, conversation_id: str = None) -> Dict:
     if conversation_id:
         cursor.execute("""
             SELECT content FROM memories
-            WHERE conversation_id = %s
+            WHERE conversation_id = ?
             ORDER BY t_event DESC LIMIT 10
         """, (conversation_id,))
         recent = [r[0] for r in cursor.fetchall()]
@@ -993,12 +993,6 @@ def store_session_wrap(session_notes: str, conversation_id: str = None) -> Dict:
         INSERT INTO sessions (session_id, summary, memory_count, topics,
                                           primary_fronter_uid, primary_fronter_name)
         VALUES (%s, %s, %s, %s, %s, %s)
-        ON CONFLICT (session_id) DO UPDATE SET
-            summary = EXCLUDED.summary,
-            memory_count = EXCLUDED.memory_count,
-            topics = EXCLUDED.topics,
-            primary_fronter_uid = EXCLUDED.primary_fronter_uid,
-            primary_fronter_name = EXCLUDED.primary_fronter_name
     """, (session_id, session_notes, memory_count, topics,
           fronter.get("uid"), fronter.get("name")))
 
@@ -1036,11 +1030,11 @@ def get_briefing(max_items: int = 10) -> Dict:
         cursor.execute("""
             SELECT m.id, m.content, m.network_type, m.t_event, m.tier,
                    m.importance, m.decay_score, m.access_count, m.fronter_name,
-                   CASE WHEN m.fronter_uid = %s THEN 0.15 ELSE 0.0 END as fronter_boost
+                   CASE WHEN m.fronter_uid = ? THEN 0.15 ELSE 0.0 END as fronter_boost
             FROM memories m
             WHERE m.valid_to IS NULL OR m.valid_to > NOW()
             ORDER BY (COALESCE(m.importance, 0.5) * COALESCE(m.decay_score, 1.0) * (1 + m.access_count * 0.1) + fronter_boost) DESC
-            LIMIT %s
+            LIMIT ?
         """, (fronter_uid, max_items))
     else:
         cursor.execute("""
@@ -1050,7 +1044,7 @@ def get_briefing(max_items: int = 10) -> Dict:
             FROM memories m
             WHERE m.valid_to IS NULL OR m.valid_to > NOW()
             ORDER BY (COALESCE(m.importance, 0.5) * COALESCE(m.decay_score, 1.0) * (1 + m.access_count * 0.1)) DESC
-            LIMIT %s
+            LIMIT ?
         """, (max_items,))
 
     memories = [dict(r) for r in cursor.fetchall()]
@@ -1108,7 +1102,7 @@ def get_narrative_briefing(token_limit: int = 500) -> Dict:
         cursor.execute("""
             SELECT id, content, t_event, tier, importance
             FROM memories
-            WHERE network_type = %s
+            WHERE network_type = ?
               AND (valid_to IS NULL OR valid_to > NOW())
             ORDER BY importance DESC, t_event DESC
             LIMIT 5
@@ -1134,7 +1128,7 @@ def memory_timeline(days: int = 30) -> Dict:
     cursor.execute("""
         SELECT id, content, network_type, t_event, t_recorded, fronter_name, tier
         FROM memories
-        WHERE t_event >= %s
+        WHERE t_event >= ?
         ORDER BY t_event DESC
     """, (cutoff,))
 
@@ -1257,9 +1251,10 @@ def hybrid_search(query: str, limit: int = 10, db_path: str = None) -> List[Dict
     fts_results = {}
     try:
         c = conn.cursor()
-        c.execute("SELECT id, ts_rank(search_vector, plainto_tsquery('english', %s)) as rank FROM memories WHERE search_vector @@ plainto_tsquery('english', %s) ORDER BY rank DESC LIMIT 30", (query, query))
-        for row in c.fetchall():
-            fts_results[row["id"]] = float(row["rank"]) if row["rank"] else 0.0
+        try:
+            c.execute("SELECT id, ts_rank(search_vector, plainto_tsquery('english', %s)) as rank FROM memories WHERE search_vector @@ plainto_tsquery('english', %s) ORDER BY rank DESC LIMIT 30", (query, query))
+            for row in c.fetchall():
+                fts_results[row["id"]] = float(row["rank"]) if row["rank"] else 0.0
     except Exception:
         pass
 
@@ -1278,7 +1273,7 @@ def hybrid_search(query: str, limit: int = 10, db_path: str = None) -> List[Dict
         return results
 
     # 4) get full memory data for candidates
-    placeholders = ",".join("%s" * len(all_ids))
+    placeholders = ",".join("?" * len(all_ids))
     c = conn.cursor()
     c.execute(f"""SELECT id, content, category, tier, COALESCE(importance, 0.5) as importance 
                   FROM memories WHERE id IN ({placeholders})""", list(all_ids))
@@ -1329,7 +1324,7 @@ def sleep_consolidate(db_path: str = None, batch_size: int = 100) -> Dict:
         SELECT id, decay_score, access_count
         FROM memories
         WHERE tier = 'L2'
-          AND (t_recorded IS NULL OR t_recorded < %s)
+          AND (t_recorded IS NULL OR t_recorded < ?)
           AND decay_score > 0.1
     """, (cutoff,))
 
@@ -2239,15 +2234,15 @@ async def handle_query(args: Dict[str, Any]) -> List[TextContent]:
         params.append(query)
 
     if network_type:
-        where_clauses.append("m.network_type = %s")
+        where_clauses.append("m.network_type = ?")
         params.append(network_type)
 
     if date_from:
-        where_clauses.append("m.t_event >= %s")
+        where_clauses.append("m.t_event >= ?")
         params.append(date_from)
 
     if date_to:
-        where_clauses.append("m.t_event <= %s")
+        where_clauses.append("m.t_event <= ?")
         params.append(date_to)
 
     if query:
@@ -2327,13 +2322,7 @@ async def handle_remember(args: Dict[str, Any]) -> List[TextContent]:
     # === ENHANCEMENT 3: detect temporal bounds ===
     temporal_bounds = detect_temporal_bounds(content)
 
-    # === ENHANCEMENT 4: detect conflicts with existing memories ===
-    conflicts = detect_memory_conflicts(content, network_type)
-
-    # === ENHANCEMENT 5: auto-score importance ===
-    importance = auto_score_importance(content, network_type)
-
-    # === ENHANCEMENT 6: get current fronter and tag memory ===
+    # === ENHANCEMENT 4: get current fronter and tag memory ===
     fronter = get_current_fronter()
     fronter_uid = args.get("fronter_uid") or fronter.get("uid")
     fronter_name = args.get("fronter_name") or fronter.get("name")
@@ -2343,8 +2332,8 @@ async def handle_remember(args: Dict[str, Any]) -> List[TextContent]:
 
     cursor.execute("""
         INSERT INTO memories (content, network_type, t_event, source, conversation_id, embedding,
-                             fronter_uid, fronter_name, valid_from, valid_to, importance)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                             fronter_uid, fronter_name, valid_from, valid_to)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
     """, (content, network_type, t_event, source, conversation_id, embedding,
           fronter_uid, fronter_name, temporal_bounds.get("valid_from"), temporal_bounds.get("valid_to"),
           importance))
@@ -2601,22 +2590,22 @@ if MCP_AVAILABLE:
             updates, params = [], []
             new_content = arguments.get("content")
             if new_content:
-                updates.append("content = %s")
+                updates.append("content = ?")
                 params.append(new_content.strip())
             new_category = arguments.get("category")
             if new_category:
-                updates.append("category = %s")
+                updates.append("category = ?")
                 params.append(new_category)
             new_tier = arguments.get("tier")
             if new_tier:
-                updates.append("tier = %s")
+                updates.append("tier = ?")
                 params.append(new_tier)
 
             if not updates:
                 conn.close()
                 return [TextContent(type="text", text=json.dumps({"error": "no fields to update"}, indent=2))]
 
-            updates.append("t_recorded = %s")
+            updates.append("t_recorded = ?")
             params.append(datetime.now().isoformat())
             params.append(memory_id)
 
@@ -2633,7 +2622,7 @@ if MCP_AVAILABLE:
 
             return [TextContent(type="text", text=json.dumps({
                 "updated": True, "id": memory_id,
-                "fields_updated": [k.replace(" = %s", "") for k in updates if k != "t_recorded = %s"]
+                "fields_updated": [k.replace(" = ?", "") for k in updates if k != "t_recorded = ?"]
             }, indent=2))]
 
         elif name == "merge_memories":
@@ -2731,7 +2720,7 @@ if MCP_AVAILABLE:
                         conn = get_db_connection()
                         cursor = conn.cursor()
                         ids = [r["id"] for r in sem_results]
-                        placeholders = ",".join("%s" * len(ids))
+                        placeholders = ",".join("?" * len(ids))
                         cursor.execute(f"SELECT id, content, category, tier, importance, decay_score, access_count FROM memories WHERE id IN ({placeholders})", ids)
                         mem_map = {r["id"]: dict(r) for r in cursor.fetchall()}
                         conn.close()
@@ -2801,7 +2790,7 @@ if MCP_AVAILABLE:
                                 conn = get_db_connection()
                                 c = conn.cursor()
                                 ids = [s["id"] for s in scored[:limit]]
-                                placeholders = ",".join("%s" * len(ids))
+                                placeholders = ",".join("?" * len(ids))
                                 c.execute(f"SELECT id, content, category FROM memories WHERE id IN ({placeholders})", ids)
                                 mem_map = {r["id"]: dict(r) for r in c.fetchall()}
                                 conn.close()
@@ -2831,8 +2820,8 @@ if MCP_AVAILABLE:
                 c.execute("""SELECT m.id, m.content, m.category, me.weight
                 FROM memory_edges me
                 JOIN memories m ON me.target_memory_id = m.id
-                WHERE me.source_memory_id = %s
-                ORDER BY me.weight DESC LIMIT %s""",
+                WHERE me.source_memory_id = ?
+                ORDER BY me.weight DESC LIMIT ?""",
                 (arguments.get("memory_id"), arguments.get("limit", 10)))
                 related = [{"id": r["id"], "content": r["content"], "category": r["category"], "weight": r["weight"]} for r in c.fetchall()]
                 conn.close()
@@ -2849,9 +2838,9 @@ if MCP_AVAILABLE:
                     return [TextContent(type="text", text=json.dumps({"error": "source_id and target_id required"}, indent=2))]
                 conn = get_db_connection()
                 c = conn.cursor()
-                c.execute("INSERT INTO memory_edges (source_memory_id, target_memory_id, relation_type, weight) VALUES (%s, %s, %s, 1.0) ON CONFLICT DO NOTHING",
+                c.execute("INSERT INTO memory_edges (source_memory_id, target_memory_id, relation_type, weight) VALUES (%s, %s, %s, 1.0)",
                           (source_id, target_id, link_type))
-                c.execute("INSERT INTO memory_edges (source_memory_id, target_memory_id, relation_type, weight) VALUES (%s, %s, %s, 1.0) ON CONFLICT DO NOTHING",
+                c.execute("INSERT INTO memory_edges (source_memory_id, target_memory_id, relation_type, weight) VALUES (%s, %s, %s, 1.0)",
                           (target_id, source_id, link_type))
                 conn.commit()
                 conn.close()
@@ -2905,7 +2894,7 @@ if MCP_AVAILABLE:
                                  JOIN memories m ON me.memory_id = m.id
                                  JOIN entities e ON me.entity_id = e.id
                                  WHERE e.canonical_name LIKE %s AND e.entity_type = %s
-                                 ORDER BY m.importance DESC LIMIT %s""",
+                                 ORDER BY m.importance DESC LIMIT ?""",
                               (f"%{entity_name}%", entity_type, arguments.get("max_results", 10)))
                 else:
                     c.execute("""SELECT DISTINCT m.id, m.content, m.category, e.entity_type
@@ -2913,7 +2902,7 @@ if MCP_AVAILABLE:
                                  JOIN memories m ON me.memory_id = m.id
                                  JOIN entities e ON me.entity_id = e.id
                                  WHERE e.canonical_name LIKE %s
-                                 ORDER BY m.importance DESC LIMIT %s""",
+                                 ORDER BY m.importance DESC LIMIT ?""",
                               (f"%{entity_name}%", arguments.get("max_results", 10)))
                 results = [{"id": r["id"], "content": r["content"][:200], "category": r["category"], "entity_type": r["entity_type"]} for r in c.fetchall()]
                 conn.close()
@@ -3099,7 +3088,7 @@ if MCP_AVAILABLE:
                     return [TextContent(type="text", text=json.dumps({"error": "memory_id and task_id required"}, indent=2))]
                 conn = get_db_connection()
                 c = conn.cursor()
-                c.execute("INSERT INTO task_memory_assignments (task_id, memory_id) VALUES (%s, %s) ON CONFLICT (task_id, memory_id) DO NOTHING", (task_id, memory_id))
+                c.execute("INSERT INTO task_memory_assignments (task_id, memory_id) VALUES (%s, %s)", (task_id, memory_id))
                 conn.commit()
                 conn.close()
                 return [TextContent(type="text", text=json.dumps({"assigned": True, "memory_id": memory_id, "task_id": task_id}, indent=2))]
@@ -3173,7 +3162,7 @@ if MCP_AVAILABLE:
                     return [TextContent(type="text", text=json.dumps({"error": "room_id and memory_id required"}, indent=2))]
                 conn = get_db_connection()
                 c = conn.cursor()
-                c.execute("INSERT INTO room_memories (room_id, memory_id) VALUES (%s, %s) ON CONFLICT (room_id, memory_id) DO NOTHING", (room_id, memory_id))
+                c.execute("INSERT INTO room_memories (room_id, memory_id) VALUES (%s, %s)", (room_id, memory_id))
                 conn.commit()
                 conn.close()
                 return [TextContent(type="text", text=json.dumps({"placed": True, "room_id": room_id, "memory_id": memory_id}, indent=2))]
@@ -3256,13 +3245,13 @@ if MCP_AVAILABLE:
                 query = "SELECT id, title, description, arc_type, status FROM narrative_arcs"
                 params = []
                 if arguments.get("status"):
-                    query += " WHERE status = %s"
+                    query += " WHERE status = ?"
                     params.append(arguments["status"])
                     if arguments.get("arc_type"):
-                        query += " AND arc_type = %s"
+                        query += " AND arc_type = ?"
                         params.append(arguments["arc_type"])
                 elif arguments.get("arc_type"):
-                    query += " WHERE arc_type = %s"
+                    query += " WHERE arc_type = ?"
                     params.append(arguments["arc_type"])
                 c.execute(query, params)
                 results = [{"id": r["id"], "title": r["title"], "description": r["description"], "arc_type": r["arc_type"], "status": r["status"]} for r in c.fetchall()]
@@ -3325,7 +3314,7 @@ if MCP_AVAILABLE:
                 query = "SELECT id, peer_url, peer_name, sync_direction, status, last_sync FROM federation_peers"
                 params = []
                 if arguments.get("status"):
-                    query += " WHERE status = %s"
+                    query += " WHERE status = ?"
                     params.append(arguments["status"])
                 c.execute(query, params)
                 results = [{"id": r["id"], "url": r["peer_url"], "name": r["peer_name"], "direction": r["sync_direction"], "status": r["status"], "last_sync": r["last_sync"]} for r in c.fetchall()]
@@ -3360,13 +3349,13 @@ if MCP_AVAILABLE:
                 updates = []
                 params = []
                 if arguments.get("valid_from"):
-                    updates.append("valid_from = %s")
+                    updates.append("valid_from = ?")
                     params.append(arguments["valid_from"])
                 if arguments.get("valid_to"):
-                    updates.append("valid_to = %s")
+                    updates.append("valid_to = ?")
                     params.append(arguments["valid_to"])
                 if arguments.get("observed_at"):
-                    updates.append("t_event = %s")
+                    updates.append("t_event = ?")
                     params.append(arguments["observed_at"])
                 if updates:
                     params.append(memory_id)
@@ -3390,13 +3379,13 @@ if MCP_AVAILABLE:
                 updates = []
                 params = []
                 if arguments.get("valid_from"):
-                    updates.append("valid_from = %s")
+                    updates.append("valid_from = ?")
                     params.append(arguments["valid_from"])
                 if arguments.get("valid_to"):
-                    updates.append("valid_to = %s")
+                    updates.append("valid_to = ?")
                     params.append(arguments["valid_to"])
                 if arguments.get("observed_at"):
-                    updates.append("t_event = %s")
+                    updates.append("t_event = ?")
                     params.append(arguments["observed_at"])
                 if updates:
                     params.append(memory_id)
@@ -3711,9 +3700,9 @@ if MCP_AVAILABLE:
                     query = "SELECT * FROM conclusions"
                     params = []
                     if arguments.get("status"):
-                        query += " WHERE status = %s"
+                        query += " WHERE status = ?"
                         params.append(arguments["status"])
-                    query += " ORDER BY confidence DESC LIMIT %s"
+                    query += " ORDER BY confidence DESC LIMIT ?"
                     params.append(arguments.get("limit", 10))
                     c.execute(query, params)
                     result = {"conclusions": [dict(r) for r in c.fetchall()]}

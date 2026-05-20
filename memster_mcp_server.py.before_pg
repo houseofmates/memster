@@ -993,12 +993,6 @@ def store_session_wrap(session_notes: str, conversation_id: str = None) -> Dict:
         INSERT INTO sessions (session_id, summary, memory_count, topics,
                                           primary_fronter_uid, primary_fronter_name)
         VALUES (%s, %s, %s, %s, %s, %s)
-        ON CONFLICT (session_id) DO UPDATE SET
-            summary = EXCLUDED.summary,
-            memory_count = EXCLUDED.memory_count,
-            topics = EXCLUDED.topics,
-            primary_fronter_uid = EXCLUDED.primary_fronter_uid,
-            primary_fronter_name = EXCLUDED.primary_fronter_name
     """, (session_id, session_notes, memory_count, topics,
           fronter.get("uid"), fronter.get("name")))
 
@@ -3099,7 +3093,7 @@ if MCP_AVAILABLE:
                     return [TextContent(type="text", text=json.dumps({"error": "memory_id and task_id required"}, indent=2))]
                 conn = get_db_connection()
                 c = conn.cursor()
-                c.execute("INSERT INTO task_memory_assignments (task_id, memory_id) VALUES (%s, %s) ON CONFLICT (task_id, memory_id) DO NOTHING", (task_id, memory_id))
+                c.execute("INSERT INTO task_memory_assignments (task_id, memory_id) VALUES (%s, %s)", (task_id, memory_id))
                 conn.commit()
                 conn.close()
                 return [TextContent(type="text", text=json.dumps({"assigned": True, "memory_id": memory_id, "task_id": task_id}, indent=2))]
@@ -3173,7 +3167,7 @@ if MCP_AVAILABLE:
                     return [TextContent(type="text", text=json.dumps({"error": "room_id and memory_id required"}, indent=2))]
                 conn = get_db_connection()
                 c = conn.cursor()
-                c.execute("INSERT INTO room_memories (room_id, memory_id) VALUES (%s, %s) ON CONFLICT (room_id, memory_id) DO NOTHING", (room_id, memory_id))
+                c.execute("INSERT INTO room_memories (room_id, memory_id) VALUES (%s, %s)", (room_id, memory_id))
                 conn.commit()
                 conn.close()
                 return [TextContent(type="text", text=json.dumps({"placed": True, "room_id": room_id, "memory_id": memory_id}, indent=2))]

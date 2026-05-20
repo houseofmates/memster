@@ -993,12 +993,6 @@ def store_session_wrap(session_notes: str, conversation_id: str = None) -> Dict:
         INSERT INTO sessions (session_id, summary, memory_count, topics,
                                           primary_fronter_uid, primary_fronter_name)
         VALUES (%s, %s, %s, %s, %s, %s)
-        ON CONFLICT (session_id) DO UPDATE SET
-            summary = EXCLUDED.summary,
-            memory_count = EXCLUDED.memory_count,
-            topics = EXCLUDED.topics,
-            primary_fronter_uid = EXCLUDED.primary_fronter_uid,
-            primary_fronter_name = EXCLUDED.primary_fronter_name
     """, (session_id, session_notes, memory_count, topics,
           fronter.get("uid"), fronter.get("name")))
 
