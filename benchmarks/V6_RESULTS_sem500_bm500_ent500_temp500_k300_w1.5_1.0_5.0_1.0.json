@@ -1,0 +1,40 @@
+{
+  "LongMemEval": {
+    "overall": 0.952,
+    "by_type": {
+      "knowledge-update": {
+        "count": 78,
+        "recall": 0.9231
+      },
+      "multi-session": {
+        "count": 133,
+        "recall": 0.9398
+      },
+      "single-session-assistant": {
+        "count": 56,
+        "recall": 0.9464
+      },
+      "single-session-preference": {
+        "count": 30,
+        "recall": 1.0
+      },
+      "single-session-user": {
+        "count": 70,
+        "recall": 0.9143
+      },
+      "temporal-reasoning": {
+        "count": 133,
+        "recall": 0.9925
+      }
+    },
+    "found": 851,
+    "total": 854,
+    "ce_time": 1338.0,
+    "time_s": 1606.0
+  },
+  "config": {
+    "embedding": "nvidia/llama-nemotron-embed-vl-1b-v2",
+    "reranker": "cross-encoder/ms-marco-MiniLM-L-6-v2",
+    "retrieval": "semantic(top-500) * 1.5 + BM25(top-500) * 1.0 + entity(top-500) * 5.0 + temporal(top-500) * 1.0 + RRF(k=300) + cross-encoder"
+  }
+}

@@ -17,6 +17,22 @@ a local-first, long-term memory system for hermes agent. it provides persistent 
 - **activity tracking** — complete local-first activity tracking and memory system for logging user interactions
 - **memory provider integration** — can be used as a memory provider in hermes agent for enhanced context
 
+<h3 align="center">v5 enhancements</h3>
+
+- **hybrid retrieval engine** — multi-signal retrieval fusing semantic similarity, BM25 keyword scoring, entity-based boosting, and temporal-proximity boosting with configurable fusion weights and optional LLM reranking
+- **rules-based entity extraction** — zero-llm-call entity and relationship extraction using regex/patterns (inspired by GBrain) with typed relationships (works_at, founded, invested_in, etc.)
+- **verbatim storage layer** — option to store original conversation turns alongside summarized memory beads for exact recall when needed
+- **sophisticated decay scoring** — multi-factor decay model with time decay, access frequency boost, reinforcement boost, network-specific curves, and importance-based pinning
+- **two-tier caching** — l1 in-memory lru cache (5-min ttl) + l2 disk-based cache (1-hour ttl) with automatic invalidation
+- **entity graph queries** — graph-style queries: who works at X? what did Y invest in? find connection paths, entity timelines
+- **feedback loop / reinforcement learning** — positive/negative/neutral feedback that adjusts memory strength and retrieval ranking
+- **delta compression** — store only diffs when updating memories, enabling version history and efficient storage
+- **bi-temporal tracking** — tracks both event_time (when thing happened) and ingested_at (when stored) for richer temporal reasoning
+- **configurable extraction modes** — choose extraction strategy: llm (summarization), verbatim (raw text), hybrid (both), or algorithmic (zero-llm heuristics)
+- **privacy & forgetting** — gdpr-compliant operations: memster_forget, memster_forget_entity, memster_export, memster_purge
+- **pluggable backend interface** — abstract basebackend with postgresql implementation; design allows swapping to sqlite or chromadb
+- **observability** — prometheus metrics endpoint, structured logging with correlation ids, operation latency histograms, health checks
+
 <h2 align="center">installation</h2>
 
 memster is designed to run alongside hermes agent. it requires postgresql and python 3.11+.
@@ -54,7 +70,7 @@ memster is designed to run alongside hermes agent. it requires postgresql and py
    - copy `.env.example` to `.env` and set `DATABASE_URL`
    ```bash
    cp .env.example .env
-   # Edit .env: DATABASE_URL=postgresql://memster:your_password@localhost:5432/memster
+   # Edit .env: DATABASE_URL=postgresql://memster:***@localhost:5432/memster
    ```
 
 5. start the memster mcp server
@@ -75,26 +91,36 @@ mcp_servers:
 ```
 
 memster provides the following tools through mcp:
-- `memster_curate` / `memster_remember` — store a new memory with auto-dedup, importance scoring, and conflict detection
+
+- `memster_curate` / `memster_remember` — store a new memory with auto-dedup, conflict detection, auto importance scoring, completeness analysis, and embeddings fallback notification
 - `memster_query` — search memories with full-text search (tsvector)
 - `memster_status` — get system status and memory count
-- `memster_embeddings_status` — check embedding backend status and setup instructions
+- `memster_embeddings_status` — check embedding backend status, model/provider info, and NVIDIA NIM setup instructions
 - `hybrid_search` — hybrid ranking combining vector similarity, full-text, and importance
-- `find_duplicates` — find near-duplicate memories using pg_trgm
-- and many more for dream system, activity tracking, spaced repetition, etc.
+- `find_duplicates` — find near-duplicate memories using pg_trgm for O(log n) detection
+- `memster_hybrid_retrieve` — advanced hybrid retrieval with configurable signal weights and optional LLM reranking
+- `memster_extract_entities` — extract entities and relationships from text using zero-LLM rules
+- `memster_store_verbatim` / `memster_get_verbatim` — store and retrieve verbatim conversation turns
+- `memster_reinforce` — boost memory strength via reinforcement learning
+- `memster_feedback` — submit feedback on memories (positive/negative/neutral)
+- `memster_memory_diff` — view differences between memory versions
+- `memster_forget` / `memster_forget_entity` — GDPR-compliant memory deletion
+- `memster_health` — comprehensive system health check
+- `memster_metrics` — prometheus-formatted metrics endpoint
+- and many more for dream system, activity tracking, spaced repetition, entity graph queries, etc.
 
 <h3 align="center">new features</h3>
 
 **auto importance scoring** — memories are automatically scored 0.0-1.0 based on:
-- network type baseline (world: 0.6, experience: 0.5, observation: 0.4)
-- presence of specific entities (IPs, paths, ports, URLs)
-- error/failure keywords
-- content length
-- action + outcome pair detection
+- network type baseline (world: 0.6, experience: 0.5, opinion: 0.4, observation: 0.4)
+- presence of specific entities (IPs, paths, ports, URLs) — combined +0.2
+- error/failure keywords (+0.15)
+- content length > 100 chars (+0.1)
+- action + outcome pair detection (+0.15)
 
-**conflict detection** — before inserting a memory, memster checks for semantic conflicts in the same network type. for example, if you store "service nginx is up", memster will warn if there's an existing memory saying "service nginx is down". conflicts are returned as warnings — they never block insertion.
+**conflict detection** — before inserting a memory, memster checks for semantic conflicts (opposite states) in the same network type. for example, if you store "service nginx is up", memster will warn if there's an existing memory saying "service nginx is down". the `memster_curate` and `memster_remember` tools return a `conflicts_detected` field with details. conflicts are returned as warnings — they never block insertion.
 
-**embeddings status** — the `memster_embeddings_status` tool reports whether nvidia nim embeddings are available and provides setup instructions if not.
+**embeddings fallback** — when nvidia nim embeddings are unavailable, tools return `"embeddings_unavailable": true` and `"fallback_mode": "keyword_search"` in their responses. the `memster_embeddings_status` tool reports the current backend status, model/provider info, and provides setup instructions for enabling nvidia nim.
 
 <h2 align="center">architecture</h2>
 
@@ -107,13 +133,41 @@ memster consists of several core components:
 - **dream_consolidation.py** — processes memories during dream cycles to reinforce learning
 - **memster_v4_features.py** — contains the 9 semantic intelligence improvements
 - **memster_phase2.py** — phase 2 enhancements for the memory system
+- **memster/** — v5 enhancement modules:
+  - hybrid_retrieval.py — multi-signal retrieval engine
+  - entity_extraction.py — rules-based entity and relationship extraction
+  - verbatim.py — verbatim conversation storage
+  - decay.py — sophisticated decay scoring
+  - cache.py — two-tier caching system
+  - feedback.py — feedback loop and reinforcement learning
+  - delta.py — delta compression and version history
+  - privacy.py — gdpr-compliant forgetting and export
+  - graph_queries.py — entity graph traversal and timeline queries
+  - extraction.py — configurable extraction modes (llm/verbatim/hybrid/algorithmic)
+  - observability.py — prometheus metrics, health checks, structured logging
+  - integration.py — wires v5 modules into mcp server
+  - backends/ — pluggable backend interface with postgresql implementation
 
 the system uses a postgresql database with the following tables:
 - `memories` — stores individual memory beads with tsvector full-text search and gin index
 - `memory_edges` — graph edges connecting related memories
 - `memory_embeddings` — nvidia nim vector embeddings for semantic search
 - `entities` — extracted entities (ips, paths, service names, etc.)
+- `memory_entities` — junction table linking memories to entities
+- `entity_relationships` — typed relationships between entities (works_at, founded, etc.)
+- `verbatim_conversations` — stored conversation turns for exact recall
+- `memory_versions` — delta-compressed version history for memory updates
+- `memory_feedback` — feedback history for reinforcement learning
 - and more for sessions, tasks, narrative arcs, memory palaces, etc.
+
+<h2 align="center">benchmarks</h2>
+
+see `benchmarks/BENCHMARKS.md` for:
+- benchmarking suite instructions
+- synthetic test corpus generator
+- retrieval performance comparisons (semantic-only vs hybrid vs hybrid+rerank)
+- comparison to competitor systems (mem0, mempalace, supermemory, honcho)
+- notes on running against locomo and longmemeval datasets
 
 <h2 align="center">contributing</h2>
 
