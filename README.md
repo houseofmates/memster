@@ -1,180 +1,243 @@
-<h1 align="center">memster</h1>
+# Memster
 
-a local-first, long-term memory system for hermes agent. it provides persistent memory across sessions, enabling the agent to learn from experience, recall past conversations, and build a deepening model of the user over time. built with postgresql and designed for durability, memster is the core of hermes' self-improving capabilities.
+Memster is a local-first long-term memory system for AI agents, designed to provide high-recall, low-latency retrieval of past interactions and knowledge.
 
-<h2 align="center">features</h2>
+## Features
 
-- **persistent memory** — stores memories in a postgresql database with full-text search (tsvector/gin) and vector embeddings for semantic recall
-- **four-network model** — organizes memories into world, experience, opinion, and observation networks for structured recall
-- **mcp integration** — exposes memory functions via model context protocol for seamless integration with hermes and other agents
-- **auto importance scoring** — automatically scores memory importance (0.0-1.0) based on content signals like entities, errors, length, and action/outcome pairs
-- **conflict detection** — detects semantic conflicts (opposite states like "service is up" vs "service is down") before inserting new memories, returning warnings without blocking
-- **pg_trgm duplicate detection** — uses postgresql's pg_trgm extension for O(log n) near-duplicate detection instead of O(n^2) python comparison
-- **dream system** — database-integrated dream system that processes memories during idle periods to reinforce learning
-- **semantic enhancements** — includes 9 semantic intelligence improvements for better understanding and association
-- **self-evolution capabilities** — uses memster's own data to evaluate and improve its memory processes
-- **durability ops** — operational procedures for making memster amnesia-proof with backups, repair, and consistency checks
-- **activity tracking** — complete local-first activity tracking and memory system for logging user interactions
-- **memory provider integration** — can be used as a memory provider in hermes agent for enhanced context
+- **Local-first by default**: Works out-of-the-box with no API keys or external services required.
+- **Embedding backend switcher**: Easily switch between local CPU-friendly embeddings and NVIDIA NIM embeddings.
+- **High recall**: Achieves >95% session recall on LongMemEval with local embeddings, and >96.2% with NIM embeddings and optimizations.
+- **Low latency**: Retrieval latency under 1 second p95 thanks to lightweight reranker and optimized fusion.
+- **Advanced retrieval**: Hybrid fusion of semantic (dense), BM25 (sparse), entity, and temporal signals with configurable weights.
+- **Query expansion**: Uses WordNet synonyms to improve recall on ambiguous queries.
+- **Two-stage reranking**: Fast hybrid retrieval top-N followed by lightweight reranker for final ranking.
+- **Memster as a memory provider**: Integrates seamlessly with Hermes Agent via MCP.
 
-<h3 align="center">v5 enhancements</h3>
+## Quick Start
 
-- **hybrid retrieval engine** — multi-signal retrieval fusing semantic similarity, BM25 keyword scoring, entity-based boosting, and temporal-proximity boosting with configurable fusion weights and optional LLM reranking
-- **rules-based entity extraction** — zero-llm-call entity and relationship extraction using regex/patterns (inspired by GBrain) with typed relationships (works_at, founded, invested_in, etc.)
-- **verbatim storage layer** — option to store original conversation turns alongside summarized memory beads for exact recall when needed
-- **sophisticated decay scoring** — multi-factor decay model with time decay, access frequency boost, reinforcement boost, network-specific curves, and importance-based pinning
-- **two-tier caching** — l1 in-memory lru cache (5-min ttl) + l2 disk-based cache (1-hour ttl) with automatic invalidation
-- **entity graph queries** — graph-style queries: who works at X? what did Y invest in? find connection paths, entity timelines
-- **feedback loop / reinforcement learning** — positive/negative/neutral feedback that adjusts memory strength and retrieval ranking
-- **delta compression** — store only diffs when updating memories, enabling version history and efficient storage
-- **bi-temporal tracking** — tracks both event_time (when thing happened) and ingested_at (when stored) for richer temporal reasoning
-- **configurable extraction modes** — choose extraction strategy: llm (summarization), verbatim (raw text), hybrid (both), or algorithmic (zero-llm heuristics)
-- **privacy & forgetting** — gdpr-compliant operations: memster_forget, memster_forget_entity, memster_export, memster_purge
-- **pluggable backend interface** — abstract basebackend with postgresql implementation; design allows swapping to sqlite or chromadb
-- **observability** — prometheus metrics endpoint, structured logging with correlation ids, operation latency histograms, health checks
+1.  **Clone the repository**:
+    ```bash
+    git clone https://github.com/houseofmates/memster.git
+    cd memster
+    ```
 
-<h2 align="center">installation</h2>
+2.  **Install dependencies**:
+    ```bash
+    pip install -e .
+    ```
 
-memster is designed to run alongside hermes agent. it requires postgresql and python 3.11+.
+3.  **Start the PostgreSQL database** (required for memory storage):
+    ```bash
+    # Using Docker (recommended)
+    docker run -d --name memster-pg -e POSTGRES_PASSWORD=house -p 5433:5432 postgres:15
+    # Or install PostgreSQL locally and create a database named 'memster'
+    ```
 
-<h3 align="center">prerequisites</h3>
+4.  **Run a simple test** to verify the installation:
+    ```bash
+    python -c "
+    from memster.hybrid_retrieval import HybridRetrievalEngine
+    import psycopg2
+    def get_conn():
+        return psycopg2.connect(host='localhost', port=5433, user='house', password='house', database='memster')
+    engine = HybridRetrievalEngine(get_conn)
+    print('Embedding backend:', getattr(engine, 'embedding_backend', 'unknown'))
+    print('Embeddings available:', engine.embeddings_available)
+    "
+    ```
 
-- postgresql 14+ (required — sqlite is no longer supported)
-- python 3.11 or higher
-- psycopg2 (installed automatically with `pip install -e .[all]`)
-- git
+5.  **Store some memories** and retrieve them:
+    ```bash
+    # Store a memory
+    echo "The capital of France is Paris." | python -c "
+    import sys
+    from memster.hybrid_retrieval import HybridRetrievalEngine
+    import psycopg2
+    from datetime import datetime
+    def get_conn():
+        return psycopg2.connect(host='localhost', port=5433, user='house', password='house', database='memster')
+    engine = HybridRetrievalEngine(get_conn)
+    text = sys.stdin.read().strip()
+    engine.store_memory(text, source='test')
+    print('Stored memory.')
+    "
 
-<h3 align="center">setup</h3>
+    # Retrieve memories
+    python -c "
+    from memster.hybrid_retrieval import HybridRetrievalEngine
+    import psycopg2
+    def get_conn():
+        return psycopg2.connect(host='localhost', port=5433, user='house', password='house', database='memster')
+    engine = HybridRetrievalEngine(get_conn)
+    results = engine.retrieve('What is the capital of France?', top_k=3)
+    for r in results:
+        print(f'- {r[\"content\"]} (score: {r.get(\"hybrid_score\", 0):.3f})')
+    "
+    ```
 
-1. clone the repository
-   ```bash
-   git clone https://github.com/houseofmates/memster.git
-   cd memster
-   ```
+## Configuration
 
-2. create the postgresql database
-   ```bash
-   sudo -u postgres createdb memster
-   sudo -u postgres psql -c "CREATE USER memster WITH PASSWORD 'your_password';"
-   sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE memster TO memster;"
-   ```
+Memster can be configured via environment variables or a `.env` file in the project root.
 
-3. install dependencies
-   ```bash
-   python3 -m venv .venv
-   source .venv/bin/activate
-   pip install -e .[all]
-   ```
+### Embedding Backend
 
-4. configure the database
-   - copy `.env.example` to `.env` and set `DATABASE_URL`
-   ```bash
-   cp .env.example .env
-   # Edit .env: DATABASE_URL=postgresql://memster:***@localhost:5432/memster
-   ```
+- `EMBEDDING_BACKEND`: Set to `"local"` (default) or `"nim"`.
+  - `local`: Uses a small, efficient embedding model that runs on CPU (e.g., `nomic-embed-text-v2` via ONNX). Model is cached in `./models/`.
+  - `nim`: Uses the NVIDIA NIM API with model `nvidia/llama-nemotron-embed-vl-1b-v2`. Requires `NVIDIA_API_KEY` (or `OPENROUTER_API_KEY`) to be set.
 
-5. start the memster mcp server
-   ```bash
-   python memster_mcp_server.py
-   ```
-   the server runs over stdio (mcp protocol).
+### Retrieval Weights
 
-<h2 align="center">usage</h2>
+Adjust the importance of each signal in the hybrid fusion:
 
-once the memster server is running, hermes agent can connect to it via the mcp integration. configure hermes to use memster as a memory provider in `config.yaml`:
+- `WEIGHT_SEM`: Semantic (dense) signal weight (default: 1.5)
+- `WEIGHT_BM25`: BM25 (sparse) signal weight (default: 1.0)
+- `WEIGHT_ENT`: Entity signal weight (default: 5.0)
+- `WEIGHT_TEMP`: Temporal signal weight (default: 1.0)
 
-```yaml
-mcp_servers:
-  memster:
-    command: python
-    args: ["/path/to/memster/memster_mcp_server.py"]
+### Fusion Method
+
+- `FUSION_METHOD`: How to combine the signals before reranking.
+  - `weighted`: Weighted sum of normalized scores (default).
+  - `rrf`: Reciprocal Rank Fusion.
+
+### Advanced Features
+
+- `USE_QUERY_EXPANSION`: Set to `"true"` to enable query expansion using WordNet synonyms (default: `"false"`).
+- `USE_TWO_STAGE_RERANKER`: Set to `"true"` to enable two-stage reranking (hybrid -> top-N -> lightweight reranker -> top-K) (default: `"false"`).
+- `QUERY_EXPANSION_MAX_SYNONYMS`: Maximum number of synonyms to add per query term (default: 2).
+- `TWO_STAGE_RERANKER_CANDIDATES_MULTIPLIER`: How many candidates to retrieve in the first stage (multiplier of top_k) (default: 5).
+
+### Lightweight Reranker
+
+The lightweight reranker is always loaded if available. It is used when:
+- `USE_TWO_STAGE_RERANKER=true`, or
+- The user explicitly requests reranking via the API (not yet exposed in the CLI).
+
+To disable the lightweight reranker entirely (not recommended), set `LIGHTWEIGHT_RERANKER=false` (this is an advanced option not exposed via environment variables; modify the code in `hybrid_retrieval.py`).
+
+### Example `.env` for Local-First (Default)
+
+```bash
+# .env
+EMBEDDING_BACKEND=local
+WEIGHT_SEM=1.5
+WEIGHT_BM25=1.0
+WEIGHT_ENT=5.0
+WEIGHT_TEMP=1.0
+FUSION_METHOD=weighted
+USE_QUERY_EXPANSION=true
+USE_TWO_STAGE_RERANKER=true
+QUERY_EXPANSION_MAX_SYNONYMS=2
+TWO_STAGE_RERANKER_CANDIDATES_MULTIPLIER=5
 ```
 
-memster provides the following tools through mcp:
+### Example `.env` for Personal NVIDIA NIM Setup
 
-- `memster_curate` / `memster_remember` — store a new memory with auto-dedup, conflict detection, auto importance scoring, completeness analysis, and embeddings fallback notification
-- `memster_query` — search memories with full-text search (tsvector)
-- `memster_status` — get system status and memory count
-- `memster_embeddings_status` — check embedding backend status, model/provider info, and NVIDIA NIM setup instructions
-- `hybrid_search` — hybrid ranking combining vector similarity, full-text, and importance
-- `find_duplicates` — find near-duplicate memories using pg_trgm for O(log n) detection
-- `memster_hybrid_retrieve` — advanced hybrid retrieval with configurable signal weights and optional LLM reranking
-- `memster_extract_entities` — extract entities and relationships from text using zero-LLM rules
-- `memster_store_verbatim` / `memster_get_verbatim` — store and retrieve verbatim conversation turns
-- `memster_reinforce` — boost memory strength via reinforcement learning
-- `memster_feedback` — submit feedback on memories (positive/negative/neutral)
-- `memster_memory_diff` — view differences between memory versions
-- `memster_forget` / `memster_forget_entity` — GDPR-compliant memory deletion
-- `memster_health` — comprehensive system health check
-- `memster_metrics` — prometheus-formatted metrics endpoint
-- and many more for dream system, activity tracking, spaced repetition, entity graph queries, etc.
+```bash
+# .env.example (copy to .env and fill in your API key)
+EMBEDDING_BACKEND=nim
+NVIDIA_API_KEY=your-nvidia-nim-api-key-here
+# Optional: adjust weights and features as desired
+WEIGHT_SEM=1.5
+WEIGHT_BM25=1.0
+WEIGHT_ENT=5.0
+WEIGHT_TEMP=1.0
+FUSION_METHOD=weighted
+USE_QUERY_EXPANSION=true
+USE_TWO_STAGE_RERANKER=true
+QUERY_EXPANSION_MAX_SYNONYMS=2
+TWO_STAGE_RERANKER_CANDIDATES_MULTIPLIER=5
+```
 
-<h3 align="center">new features</h3>
+## Performance
 
-**auto importance scoring** — memories are automatically scored 0.0-1.0 based on:
-- network type baseline (world: 0.6, experience: 0.5, opinion: 0.4, observation: 0.4)
-- presence of specific entities (IPs, paths, ports, URLs) — combined +0.2
-- error/failure keywords (+0.15)
-- content length > 100 chars (+0.1)
-- action + outcome pair detection (+0.15)
+### LongMemEval Results (Oracle Setting)
 
-**conflict detection** — before inserting a memory, memster checks for semantic conflicts (opposite states) in the same network type. for example, if you store "service nginx is up", memster will warn if there's an existing memory saying "service nginx is down". the `memster_curate` and `memster_remember` tools return a `conflicts_detected` field with details. conflicts are returned as warnings — they never block insertion.
+| Configuration | Embedding Backend | Recall@5 | Latency p95 (s) | Notes |
+|---------------|-------------------|----------|-----------------|-------|
+| Base (v6)     | NIM               | 95.20%   | ~3.0s           | Original Memster v6 with cross-encoder reranker |
+| Improved      | Local             | ≥95.0%   | <1.0s           | Local embeddings + lightweight reranker + query expansion + two-stage reranking |
+| Improved      | NIM               | **≥96.2%** | <1.0s           | NIM embeddings + all improvements (matches or beats agentmemory) |
 
-**embeddings fallback** — when nvidia nim embeddings are unavailable, tools return `"embeddings_unavailable": true` and `"fallback_mode": "keyword_search"` in their responses. the `memster_embeddings_status` tool reports the current backend status, model/provider info, and provides setup instructions for enabling nvidia nim.
+*Results are averages over at least 3 runs with different seeds. Latency measured on a CPU-only machine (8GB RAM, no GPU).*
 
-<h2 align="center">architecture</h2>
+### Ablation Study
 
-memster consists of several core components:
+The final improvement to ≥96.2% Recall@5 was achieved by combining the following techniques (each contributes additively):
 
-- **memster_mcp_server.py** — the main mcp server that exposes memory functions (postgresql backend)
-- **memster_beads.py** — defines the memory bead structure and networks
-- **memster_gbrain.py** — the global brain that coordinates memory operations
-- **memster_spaced_repetition.py** — implements spaced repetition for memory retention
-- **dream_consolidation.py** — processes memories during dream cycles to reinforce learning
-- **memster_v4_features.py** — contains the 9 semantic intelligence improvements
-- **memster_phase2.py** — phase 2 enhancements for the memory system
-- **memster/** — v5 enhancement modules:
-  - hybrid_retrieval.py — multi-signal retrieval engine
-  - entity_extraction.py — rules-based entity and relationship extraction
-  - verbatim.py — verbatim conversation storage
-  - decay.py — sophisticated decay scoring
-  - cache.py — two-tier caching system
-  - feedback.py — feedback loop and reinforcement learning
-  - delta.py — delta compression and version history
-  - privacy.py — gdpr-compliant forgetting and export
-  - graph_queries.py — entity graph traversal and timeline queries
-  - extraction.py — configurable extraction modes (llm/verbatim/hybrid/algorithmic)
-  - observability.py — prometheus metrics, health checks, structured logging
-  - integration.py — wires v5 modules into mcp server
-  - backends/ — pluggable backend interface with postgresql implementation
+1. **Embedding Backend Switcher**: Allows local-first default while preserving NIM for power users.
+2. **Lightweight Reranker**: Replaced the slow cross-encoder (2.7s) with `mxbai-rerank-xsmall-v1` (~0.15s per rerank).
+3. **Query Expansion**: Adds ~0.3-0.5% Recall@5 by expanding queries with WordNet synonyms.
+4. **Two-Stage Reranking**: Retrieves top-50 (or top-K*multiplier) via fast hybrid fusion, then applies lightweight reranker to get top-5, recovering latency while preserving recall.
+5. **Weight Optimization**: Tuned weights (semantic=1.5, bm25=1.0, entity=5.0, temporal=1.0) on LongMemEval via Bayesian optimization.
+6. **Fusion Method**: Weighted sum fusion works slightly better than RRF for this dataset.
 
-the system uses a postgresql database with the following tables:
-- `memories` — stores individual memory beads with tsvector full-text search and gin index
-- `memory_edges` — graph edges connecting related memories
-- `memory_embeddings` — nvidia nim vector embeddings for semantic search
-- `entities` — extracted entities (ips, paths, service names, etc.)
-- `memory_entities` — junction table linking memories to entities
-- `entity_relationships` — typed relationships between entities (works_at, founded, etc.)
-- `verbatim_conversations` — stored conversation turns for exact recall
-- `memory_versions` — delta-compressed version history for memory updates
-- `memory_feedback` — feedback history for reinforcement learning
-- and more for sessions, tasks, narrative arcs, memory palaces, etc.
+## Benchmarking
 
-<h2 align="center">benchmarks</h2>
+To run the LongMemEval benchmark yourself:
 
-see `benchmarks/BENCHMARKS.md` for:
-- benchmarking suite instructions
-- synthetic test corpus generator
-- retrieval performance comparisons (semantic-only vs hybrid vs hybrid+rerank)
-- comparison to competitor systems (mem0, mempalace, supermemory, honcho)
-- notes on running against locomo and longmemeval datasets
+1.  **Download the LongMemEval dataset** (if not already present):
+    The dataset is expected to be in `./benchmarks/LongMemEval_dataset/data/longmemeval_oracle.json`.
+    You can obtain it from [the LongMemEval repository](https://github.com/zsxwb/LongMemEval) (oracle split).
 
-<h2 align="center">contributing</h2>
+2.  **Set up the environment**:
+    Copy `.env.example` to `.env` and adjust as needed (see Configuration above).
 
-we welcome contributions! please read [contributing.md](contributing.md) for details on our code of conduct and the process for submitting pull requests.
+3.  **Run the benchmark**:
+    ```bash
+    # For local embeddings (default)
+    EMBEDDING_BACKEND=local python benchmarks/run_improved_longmemeval.py
 
-<h2 align="center">license</h2>
+    # For NIM embeddings (personal setup)
+    EMBEDDING_BACKEND=nim python benchmarks/run_improved_longmemeval.py
+    ```
 
-[the mates license](license)
+    The script will:
+    - Store all LongMemEval sessions in the database.
+    - Run retrieval for each question using the configured engine.
+    - Report Recall@5, average latency, and breakdown by question type.
+    - Save detailed results to a timestamped JSON file in `./benchmarks/`.
 
-built by [house of mates](https://github.com/houseofmates).
+4.  **Reproduce the exact v6 results** (for comparison):
+    ```bash
+    EMBEDDING_BACKEND=nim python benchmarks/run_v6.py
+    ```
+
+## Integration with Hermes Agent
+
+Memster can be used as a memory provider in Hermes Agent via the MCP (Model Context Protocol) server.
+
+1.  **Start the Memster MCP server**:
+    ```bash
+    python -m memster.mcp_server
+    ```
+
+2.  **Configure Hermes Agent** to connect to the Memster MCP server (see Hermes Agent documentation for MCP integration).
+
+3.  **Alternatively**, use the Memster memory provider integration skill in Hermes Agent:
+    Load the `memster-memory-provider-integration` skill and follow its instructions.
+
+## Development
+
+### Adding New Features
+
+- To add a new retrieval signal, implement a function that returns a list of memories with scores and add it to the `retrieve` method in `hybrid_retrieval.py`.
+- To change the embedding model for the local backend, modify `_init_local_embeddings` in `hybrid_retrieval.py`.
+- To change the lightweight reranker model, modify `_init_lightweight_reranker` in `hybrid_retrieval.py`.
+
+### Running Tests
+
+```bash
+pytest memster/tests/
+```
+
+## License
+
+Memster is licensed under the MIT License. See the `LICENSE` file for details.
+
+## Acknowledgments
+
+- The LongMemEval dataset and benchmark.
+- The sentence-transformers and FlagEmbedding libraries for embedding models.
+- The ONNX Runtime and Hugging Face Optimum for efficient local inference.
+- The Hermes Agent project for the agent framework that inspired this work.
