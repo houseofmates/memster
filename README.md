@@ -1,243 +1,319 @@
-# Memster
+<p align="center">
 
-Memster is a local-first long-term memory system for AI agents, designed to provide high-recall, low-latency retrieval of past interactions and knowledge.
+# memster
 
-## Features
+</p>
 
-- **Local-first by default**: Works out-of-the-box with no API keys or external services required.
-- **Embedding backend switcher**: Easily switch between local CPU-friendly embeddings and NVIDIA NIM embeddings.
-- **High recall**: Achieves >95% session recall on LongMemEval with local embeddings, and >96.2% with NIM embeddings and optimizations.
-- **Low latency**: Retrieval latency under 1 second p95 thanks to lightweight reranker and optimized fusion.
-- **Advanced retrieval**: Hybrid fusion of semantic (dense), BM25 (sparse), entity, and temporal signals with configurable weights.
-- **Query expansion**: Uses WordNet synonyms to improve recall on ambiguous queries.
-- **Two-stage reranking**: Fast hybrid retrieval top-N followed by lightweight reranker for final ranking.
-- **Memster as a memory provider**: Integrates seamlessly with Hermes Agent via MCP.
+memster is a local-first long-term memory system for ai agents, designed to provide high-recall, low-latency retrieval of past interactions and knowledge.
 
-## Quick Start
+<p align="center">
 
-1.  **Clone the repository**:
+## features
+
+</p>
+
+- **local-first by default**: works out-of-the-box with no api keys or external services required.
+- **embedding backend switcher**: easily switch between local cpu-friendly embeddings and nvidia nim embeddings.
+- **high recall**: achieves >95% session recall on longmemeval with local embeddings, and >96.2% with nim embeddings and optimizations.
+- **low latency**: retrieval latency under 1 second p95 thanks to lightweight reranker and optimized fusion.
+- **advanced retrieval**: hybrid fusion of semantic (dense), bm25 (sparse), entity, and temporal signals with configurable weights.
+- **query expansion**: uses wordnet synonyms to improve recall on ambiguous queries.
+- **two-stage reranking**: fast hybrid retrieval top-n followed by lightweight reranker for final ranking.
+- **memster as a memory provider**: integrates seamlessly with hermes agent via mcp.
+
+<p align="center">
+
+## quick start
+
+</p>
+
+1.  **clone the repository**:
     ```bash
     git clone https://github.com/houseofmates/memster.git
     cd memster
     ```
 
-2.  **Install dependencies**:
+2.  **install dependencies**:
     ```bash
     pip install -e .
     ```
 
-3.  **Start the PostgreSQL database** (required for memory storage):
+3.  **start the postgresql database** (required for memory storage):
     ```bash
-    # Using Docker (recommended)
-    docker run -d --name memster-pg -e POSTGRES_PASSWORD=house -p 5433:5432 postgres:15
-    # Or install PostgreSQL locally and create a database named 'memster'
+    # using docker (recommended)
+    docker run -d --name memster-pg -e postgres_password=*** -p 5433:5432 postgres:15
+    # or install postgresql locally and create a database named 'memster'
     ```
 
-4.  **Run a simple test** to verify the installation:
+4.  **run a simple test** to verify the installation:
     ```bash
     python -c "
-    from memster.hybrid_retrieval import HybridRetrievalEngine
+    from memster.hybrid_retrieval import hybridretrievalengine
     import psycopg2
     def get_conn():
         return psycopg2.connect(host='localhost', port=5433, user='house', password='house', database='memster')
-    engine = HybridRetrievalEngine(get_conn)
-    print('Embedding backend:', getattr(engine, 'embedding_backend', 'unknown'))
-    print('Embeddings available:', engine.embeddings_available)
+    engine = hybridretrievalengine(get_conn)
+    print('embedding backend:', getattr(engine, 'embedding_backend', 'unknown'))
+    print('embeddings available:', engine.embeddings_available)
     "
     ```
 
-5.  **Store some memories** and retrieve them:
+5.  **store some memories** and retrieve them:
     ```bash
-    # Store a memory
-    echo "The capital of France is Paris." | python -c "
+    # store a memory
+    echo "the capital of france is paris." | python -c "
     import sys
-    from memster.hybrid_retrieval import HybridRetrievalEngine
+    from memster.hybrid_retrieval import hybridretrievalengine
     import psycopg2
     from datetime import datetime
     def get_conn():
         return psycopg2.connect(host='localhost', port=5433, user='house', password='house', database='memster')
-    engine = HybridRetrievalEngine(get_conn)
+    engine = hybridretrievalengine(get_conn)
     text = sys.stdin.read().strip()
     engine.store_memory(text, source='test')
-    print('Stored memory.')
+    print('stored memory.')
     "
 
-    # Retrieve memories
+    # retrieve memories
     python -c "
-    from memster.hybrid_retrieval import HybridRetrievalEngine
+    from memster.hybrid_retrieval import hybridretrievalengine
     import psycopg2
     def get_conn():
         return psycopg2.connect(host='localhost', port=5433, user='house', password='house', database='memster')
-    engine = HybridRetrievalEngine(get_conn)
-    results = engine.retrieve('What is the capital of France?', top_k=3)
+    engine = hybridretrievalengine(get_conn)
+    results = engine.retrieve('what is the capital of france?', top_k=3)
     for r in results:
-        print(f'- {r[\"content\"]} (score: {r.get(\"hybrid_score\", 0):.3f})')
+        print(f'- {r["content"]} (score: {r.get("hybrid_score", 0):.3f})')
     "
     ```
 
-## Configuration
+<p align="center">
 
-Memster can be configured via environment variables or a `.env` file in the project root.
+## configuration
 
-### Embedding Backend
+</p>
 
-- `EMBEDDING_BACKEND`: Set to `"local"` (default) or `"nim"`.
-  - `local`: Uses a small, efficient embedding model that runs on CPU (e.g., `nomic-embed-text-v2` via ONNX). Model is cached in `./models/`.
-  - `nim`: Uses the NVIDIA NIM API with model `nvidia/llama-nemotron-embed-vl-1b-v2`. Requires `NVIDIA_API_KEY` (or `OPENROUTER_API_KEY`) to be set.
+memster can be configured via environment variables or a `.env` file in the project root.
 
-### Retrieval Weights
+### embedding backend
 
-Adjust the importance of each signal in the hybrid fusion:
+- `embedding_backend`: set to `"local"` (default) or `"nim"`.
+  - `local`: uses a small, efficient embedding model that runs on cpu (e.g., `nomic-embed-text-v2` via onnx). model is cached in `./models/`.
+  - `nim`: uses the nvidia nim api with model `nvidia/llama-nemotron-embed-vl-1b-v2`. requires `nvidia_api_key` (or `openrouter_api_key`) to be set.
 
-- `WEIGHT_SEM`: Semantic (dense) signal weight (default: 1.5)
-- `WEIGHT_BM25`: BM25 (sparse) signal weight (default: 1.0)
-- `WEIGHT_ENT`: Entity signal weight (default: 5.0)
-- `WEIGHT_TEMP`: Temporal signal weight (default: 1.0)
+### retrieval weights
 
-### Fusion Method
+adjust the importance of each signal in the hybrid fusion:
 
-- `FUSION_METHOD`: How to combine the signals before reranking.
-  - `weighted`: Weighted sum of normalized scores (default).
-  - `rrf`: Reciprocal Rank Fusion.
+- `weight_sem`: semantic (dense) signal weight (default: 1.5)
+- `weight_bm25`: bm25 (sparse) signal weight (default: 1.0)
+- `weight_ent`: entity signal weight (default: 5.0)
+- `weight_temp`: temporal signal weight (default: 1.0)
 
-### Advanced Features
+<p align="center">
 
-- `USE_QUERY_EXPANSION`: Set to `"true"` to enable query expansion using WordNet synonyms (default: `"false"`).
-- `USE_TWO_STAGE_RERANKER`: Set to `"true"` to enable two-stage reranking (hybrid -> top-N -> lightweight reranker -> top-K) (default: `"false"`).
-- `QUERY_EXPANSION_MAX_SYNONYMS`: Maximum number of synonyms to add per query term (default: 2).
-- `TWO_STAGE_RERANKER_CANDIDATES_MULTIPLIER`: How many candidates to retrieve in the first stage (multiplier of top_k) (default: 5).
+### fusion method
 
-### Lightweight Reranker
+</p>
 
-The lightweight reranker is always loaded if available. It is used when:
-- `USE_TWO_STAGE_RERANKER=true`, or
-- The user explicitly requests reranking via the API (not yet exposed in the CLI).
+- `fusion_method`: how to combine the signals before reranking.
+  - `weighted`: weighted sum of normalized scores (default).
+  - `rrf`: reciprocal rank fusion.
 
-To disable the lightweight reranker entirely (not recommended), set `LIGHTWEIGHT_RERANKER=false` (this is an advanced option not exposed via environment variables; modify the code in `hybrid_retrieval.py`).
+<p align="center">
 
-### Example `.env` for Local-First (Default)
+### advanced features
+
+</p>
+
+- `use_query_expansion`: set to `"true"` to enable query expansion using wordnet synonyms (default: `"false"`).
+- `use_two_stage_reranker`: set to `"true"` to enable two-stage reranking (hybrid -> top-n -> lightweight reranker -> top-k) (default: `"false"`).
+- `query_expansion_max_synonyms`: maximum number of synonyms to add per query term (default: 2).
+- `two_stage_reranker_candidates_multiplier`: how many candidates to retrieve in the first stage (multiplier of top_k) (default: 5).
+
+<p align="center">
+
+### lightweight reranker
+
+</p>
+
+the lightweight reranker is always loaded if available. it is used when:
+- `use_two_stage_reranker=true`, or
+- the user explicitly requests reranking via the api (not yet exposed in the cli).
+
+to disable the lightweight reranker entirely (not recommended), set `lightweight_reranker=false` (this is an advanced option not exposed via environment variables; modify the code in `hybrid_retrieval.py`).
+
+<p align="center">
+
+### example `.env` for local-first (default)
+
+</p>
 
 ```bash
 # .env
-EMBEDDING_BACKEND=local
-WEIGHT_SEM=1.5
-WEIGHT_BM25=1.0
-WEIGHT_ENT=5.0
-WEIGHT_TEMP=1.0
-FUSION_METHOD=weighted
-USE_QUERY_EXPANSION=true
-USE_TWO_STAGE_RERANKER=true
-QUERY_EXPANSION_MAX_SYNONYMS=2
-TWO_STAGE_RERANKER_CANDIDATES_MULTIPLIER=5
+embedding_backend=local
+weight_sem=1.5
+weight_bm25=1.0
+weight_ent=5.0
+weight_temp=1.0
+fusion_method=weighted
+use_query_expansion=true
+use_two_stage_reranker=true
+query_expansion_max_synonyms=2
+two_stage_reranker_candidates_multiplier=5
 ```
 
-### Example `.env` for Personal NVIDIA NIM Setup
+<p align="center">
+
+### example `.env` for personal nvidia nim setup
+
+</p>
 
 ```bash
-# .env.example (copy to .env and fill in your API key)
-EMBEDDING_BACKEND=nim
-NVIDIA_API_KEY=your-nvidia-nim-api-key-here
-# Optional: adjust weights and features as desired
-WEIGHT_SEM=1.5
-WEIGHT_BM25=1.0
-WEIGHT_ENT=5.0
-WEIGHT_TEMP=1.0
-FUSION_METHOD=weighted
-USE_QUERY_EXPANSION=true
-USE_TWO_STAGE_RERANKER=true
-QUERY_EXPANSION_MAX_SYNONYMS=2
-TWO_STAGE_RERANKER_CANDIDATES_MULTIPLIER=5
+# .env.example (copy to .env and fill in your api key)
+embedding_backend=nim
+nvidia_api_key=your-n...here
+# optional: adjust weights and features as desired
+weight_sem=1.5
+weight_bm25=1.0
+weight_ent=5.0
+weight_temp=1.0
+fusion_method=weighted
+use_query_expansion=true
+use_two_stage_reranker=true
+query_expansion_max_synonyms=2
+two_stage_reranker_candidates_multiplier=5
 ```
 
-## Performance
+<p align="center">
 
-### LongMemEval Results (Oracle Setting)
+## performance
 
-| Configuration | Embedding Backend | Recall@5 | Latency p95 (s) | Notes |
-|---------------|-------------------|----------|-----------------|-------|
-| Base (v6)     | NIM               | 95.20%   | ~3.0s           | Original Memster v6 with cross-encoder reranker |
-| Improved      | Local             | ≥95.0%   | <1.0s           | Local embeddings + lightweight reranker + query expansion + two-stage reranking |
-| Improved      | NIM               | **≥96.2%** | <1.0s           | NIM embeddings + all improvements (matches or beats agentmemory) |
+</p>
 
-*Results are averages over at least 3 runs with different seeds. Latency measured on a CPU-only machine (8GB RAM, no GPU).*
+<p align="center">
 
-### Ablation Study
+### longmemeval results (oracle setting)
 
-The final improvement to ≥96.2% Recall@5 was achieved by combining the following techniques (each contributes additively):
+</p>
 
-1. **Embedding Backend Switcher**: Allows local-first default while preserving NIM for power users.
-2. **Lightweight Reranker**: Replaced the slow cross-encoder (2.7s) with `mxbai-rerank-xsmall-v1` (~0.15s per rerank).
-3. **Query Expansion**: Adds ~0.3-0.5% Recall@5 by expanding queries with WordNet synonyms.
-4. **Two-Stage Reranking**: Retrieves top-50 (or top-K*multiplier) via fast hybrid fusion, then applies lightweight reranker to get top-5, recovering latency while preserving recall.
-5. **Weight Optimization**: Tuned weights (semantic=1.5, bm25=1.0, entity=5.0, temporal=1.0) on LongMemEval via Bayesian optimization.
-6. **Fusion Method**: Weighted sum fusion works slightly better than RRF for this dataset.
+|| configuration | embedding backend | recall@5 | latency p95 (s) | notes |
+||---------------|-------------------|----------|-----------------|-------|
+|| base (v6)     | nim               | 95.20%   | ~3.0s           | original memster v6 with cross-encoder reranker |
+|| improved      | local             | ≥95.0%   | <1.0s           | local embeddings + lightweight reranker + query expansion + two-stage reranking |
+|| improved      | nim               | **≥96.2%** | <1.0s           | nim embeddings + all improvements (matches or beats agentmemory) |
 
-## Benchmarking
+*results are averages over at least 3 runs with different seeds. latency measured on a cpu-only machine (8gb ram, no gpu).*
 
-To run the LongMemEval benchmark yourself:
+<p align="center">
 
-1.  **Download the LongMemEval dataset** (if not already present):
-    The dataset is expected to be in `./benchmarks/LongMemEval_dataset/data/longmemeval_oracle.json`.
-    You can obtain it from [the LongMemEval repository](https://github.com/zsxwb/LongMemEval) (oracle split).
+### ablation study
 
-2.  **Set up the environment**:
-    Copy `.env.example` to `.env` and adjust as needed (see Configuration above).
+</p>
 
-3.  **Run the benchmark**:
+the final improvement to ≥96.2% recall@5 was achieved by combining the following techniques (each contributes additively):
+
+1. **embedding backend switcher**: allows local-first default while preserving nim for power users.
+2. **lightweight reranker**: replaced the slow cross-encoder (2.7s) with `mxbai-rerank-xsmall-v1` (~0.15s per rerank).
+3. **query expansion**: adds ~0.3-0.5% recall@5 by expanding queries with wordnet synonyms.
+4. **two-stage reranking**: retrieves top-50 (or top-k*multiplier) via fast hybrid fusion, then applies lightweight reranker to get top-5, recovering latency while preserving recall.
+5. **weight optimization**: tuned weights (semantic=1.5, bm25=1.0, entity=5.0, temporal=1.0) on longmemeval via bayesian optimization.
+6. **fusion method**: weighted sum fusion works slightly better than rrf for this dataset.
+
+<p align="center">
+
+## benchmarking
+
+</p>
+
+to run the longmemeval benchmark yourself:
+
+1.  **download the longmemeval dataset** (if not already present):
+    the dataset is expected to be in `./benchmarks/longmemeval_dataset/data/longmemeval_oracle.json`.
+    you can obtain it from [the longmemeval repository](https://github.com/zsxwb/longmemeval) (oracle split).
+
+2.  **set up the environment**:
+    copy `.env.example` to `.env` and adjust as needed (see configuration above).
+
+3.  **run the benchmark**:
     ```bash
-    # For local embeddings (default)
-    EMBEDDING_BACKEND=local python benchmarks/run_improved_longmemeval.py
+    # for local embeddings (default)
+    embedding_backend=local python benchmarks/run_improved_longmemeval.py
 
-    # For NIM embeddings (personal setup)
-    EMBEDDING_BACKEND=nim python benchmarks/run_improved_longmemeval.py
+    # for nim embeddings (personal setup)
+    embedding_backend=nim python benchmarks/run_improved_longmemeval.py
     ```
 
-    The script will:
-    - Store all LongMemEval sessions in the database.
-    - Run retrieval for each question using the configured engine.
-    - Report Recall@5, average latency, and breakdown by question type.
-    - Save detailed results to a timestamped JSON file in `./benchmarks/`.
+    the script will:
+    - store all longmemeval sessions in the database.
+    - run retrieval for each question using the configured engine.
+    - report recall@5, average latency, and breakdown by question type.
+    - save detailed results to a timestamped json file in `./benchmarks/`.
 
-4.  **Reproduce the exact v6 results** (for comparison):
+4.  **reproduce the exact v6 results** (for comparison):
     ```bash
-    EMBEDDING_BACKEND=nim python benchmarks/run_v6.py
+    embedding_backend=nim python benchmarks/run_v6.py
     ```
 
-## Integration with Hermes Agent
+<p align="center">
 
-Memster can be used as a memory provider in Hermes Agent via the MCP (Model Context Protocol) server.
+## integration with hermes agent
 
-1.  **Start the Memster MCP server**:
+</p>
+
+memster can be used as a memory provider in hermes agent via the mcp (model context protocol) server.
+
+1.  **start the memster mcp server**:
     ```bash
     python -m memster.mcp_server
     ```
 
-2.  **Configure Hermes Agent** to connect to the Memster MCP server (see Hermes Agent documentation for MCP integration).
+2.  **configure hermes agent** to connect to the memster mcp server (see hermes agent documentation for mcp integration).
 
-3.  **Alternatively**, use the Memster memory provider integration skill in Hermes Agent:
-    Load the `memster-memory-provider-integration` skill and follow its instructions.
+3.  **alternatively**, use the memster memory provider integration skill in hermes agent:
+    load the `memster-memory-provider-integration` skill and follow its instructions.
 
-## Development
+<p align="center">
 
-### Adding New Features
+## development
 
-- To add a new retrieval signal, implement a function that returns a list of memories with scores and add it to the `retrieve` method in `hybrid_retrieval.py`.
-- To change the embedding model for the local backend, modify `_init_local_embeddings` in `hybrid_retrieval.py`.
-- To change the lightweight reranker model, modify `_init_lightweight_reranker` in `hybrid_retrieval.py`.
+</p>
 
-### Running Tests
+<p align="center">
+
+### adding new features
+
+</p>
+
+- to add a new retrieval signal, implement a function that returns a list of memories with scores and add it to the `retrieve` method in `hybrid_retrieval.py`.
+- to change the embedding model for the local backend, modify `_init_local_embeddings` in `hybrid_retrieval.py`.
+- to change the lightweight reranker model, modify `_init_lightweight_reranker` in `hybrid_retrieval.py`.
+
+<p align="center">
+
+### running tests
+
+</p>
 
 ```bash
 pytest memster/tests/
 ```
 
-## License
+<p align="center">
 
-Memster is licensed under the MIT License. See the `LICENSE` file for details.
+## license
 
-## Acknowledgments
+</p>
 
-- The LongMemEval dataset and benchmark.
-- The sentence-transformers and FlagEmbedding libraries for embedding models.
-- The ONNX Runtime and Hugging Face Optimum for efficient local inference.
-- The Hermes Agent project for the agent framework that inspired this work.
+memster is licensed under the mit license. see the `license` file for details.
+
+<p align="center">
+
+## acknowledgments
+
+</p>
+
+- the longmemeval dataset and benchmark.
+- the sentence-transformers and flagembedding libraries for embedding models.
+- the onnx runtime and hugging face optimum for efficient local inference.
+- the hermes agent project for the agent framework that inspired this work.
