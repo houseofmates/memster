@@ -1,16 +1,8 @@
-<p align="center">
-
-# memster
-
-</p>
+<h1 align="center">memster</h1>
 
 memster is a local-first long-term memory system for ai agents, designed to provide high-recall, low-latency retrieval of past interactions and knowledge.
 
-<p align="center">
-
-## features
-
-</p>
+<h2 align="center">features</h2>
 
 - **local-first by default**: works out-of-the-box with no api keys or external services required.
 - **embedding backend switcher**: easily switch between local cpu-friendly embeddings and nvidia nim embeddings.
@@ -21,11 +13,7 @@ memster is a local-first long-term memory system for ai agents, designed to prov
 - **two-stage reranking**: fast hybrid retrieval top-n followed by lightweight reranker for final ranking.
 - **memster as a memory provider**: integrates seamlessly with hermes agent via mcp.
 
-<p align="center">
-
-## quick start
-
-</p>
+<h2 align="center">quick start</h2>
 
 1.  **clone the repository**:
     ```bash
@@ -87,11 +75,7 @@ memster is a local-first long-term memory system for ai agents, designed to prov
     "
     ```
 
-<p align="center">
-
-## configuration
-
-</p>
+<h2 align="center">configuration</h2>
 
 memster can be configured via environment variables or a `.env` file in the project root.
 
@@ -110,32 +94,20 @@ adjust the importance of each signal in the hybrid fusion:
 - `weight_ent`: entity signal weight (default: 5.0)
 - `weight_temp`: temporal signal weight (default: 1.0)
 
-<p align="center">
-
-### fusion method
-
-</p>
+<h3 align="center">fusion method</h3>
 
 - `fusion_method`: how to combine the signals before reranking.
   - `weighted`: weighted sum of normalized scores (default).
   - `rrf`: reciprocal rank fusion.
 
-<p align="center">
-
-### advanced features
-
-</p>
+<h3 align="center">advanced features</h3>
 
 - `use_query_expansion`: set to `"true"` to enable query expansion using wordnet synonyms (default: `"false"`).
 - `use_two_stage_reranker`: set to `"true"` to enable two-stage reranking (hybrid -> top-n -> lightweight reranker -> top-k) (default: `"false"`).
 - `query_expansion_max_synonyms`: maximum number of synonyms to add per query term (default: 2).
 - `two_stage_reranker_candidates_multiplier`: how many candidates to retrieve in the first stage (multiplier of top_k) (default: 5).
 
-<p align="center">
-
-### lightweight reranker
-
-</p>
+<h3 align="center">lightweight reranker</h3>
 
 the lightweight reranker is always loaded if available. it is used when:
 - `use_two_stage_reranker=true`, or
@@ -143,11 +115,7 @@ the lightweight reranker is always loaded if available. it is used when:
 
 to disable the lightweight reranker entirely (not recommended), set `lightweight_reranker=false` (this is an advanced option not exposed via environment variables; modify the code in `hybrid_retrieval.py`).
 
-<p align="center">
-
-### example `.env` for local-first (default)
-
-</p>
+<h3 align="center">example `.env` for local-first (default)</h3>
 
 ```bash
 # .env
@@ -163,11 +131,7 @@ query_expansion_max_synonyms=2
 two_stage_reranker_candidates_multiplier=5
 ```
 
-<p align="center">
-
-### example `.env` for personal nvidia nim setup
-
-</p>
+<h3 align="center">example `.env` for personal nvidia nim setup</h3>
 
 ```bash
 # .env.example (copy to .env and fill in your api key)
@@ -185,17 +149,9 @@ query_expansion_max_synonyms=2
 two_stage_reranker_candidates_multiplier=5
 ```
 
-<p align="center">
+<h2 align="center">performance</h2>
 
-## performance
-
-</p>
-
-<p align="center">
-
-### longmemeval results (oracle setting)
-
-</p>
+<h3 align="center">longmemeval results (oracle setting)</h3>
 
 || configuration | embedding backend | recall@5 | latency p95 (s) | notes |
 ||---------------|-------------------|----------|-----------------|-------|
@@ -205,11 +161,7 @@ two_stage_reranker_candidates_multiplier=5
 
 *results are averages over at least 3 runs with different seeds. latency measured on a cpu-only machine (8gb ram, no gpu).*
 
-<p align="center">
-
-### ablation study
-
-</p>
+<h3 align="center">ablation study</h3>
 
 the final improvement to ≥96.2% recall@5 was achieved by combining the following techniques (each contributes additively):
 
@@ -220,11 +172,7 @@ the final improvement to ≥96.2% recall@5 was achieved by combining the followi
 5. **weight optimization**: tuned weights (semantic=1.5, bm25=1.0, entity=5.0, temporal=1.0) on longmemeval via bayesian optimization.
 6. **fusion method**: weighted sum fusion works slightly better than rrf for this dataset.
 
-<p align="center">
-
-## benchmarking
-
-</p>
+<h2 align="center">benchmarking</h2>
 
 to run the longmemeval benchmark yourself:
 
@@ -255,11 +203,7 @@ to run the longmemeval benchmark yourself:
     embedding_backend=nim python benchmarks/run_v6.py
     ```
 
-<p align="center">
-
-## integration with hermes agent
-
-</p>
+<h2 align="center">integration with hermes agent</h2>
 
 memster can be used as a memory provider in hermes agent via the mcp (model context protocol) server.
 
@@ -273,45 +217,25 @@ memster can be used as a memory provider in hermes agent via the mcp (model cont
 3.  **alternatively**, use the memster memory provider integration skill in hermes agent:
     load the `memster-memory-provider-integration` skill and follow its instructions.
 
-<p align="center">
+<h2 align="center">development</h2>
 
-## development
-
-</p>
-
-<p align="center">
-
-### adding new features
-
-</p>
+<h3 align="center">adding new features</h3>
 
 - to add a new retrieval signal, implement a function that returns a list of memories with scores and add it to the `retrieve` method in `hybrid_retrieval.py`.
 - to change the embedding model for the local backend, modify `_init_local_embeddings` in `hybrid_retrieval.py`.
 - to change the lightweight reranker model, modify `_init_lightweight_reranker` in `hybrid_retrieval.py`.
 
-<p align="center">
-
-### running tests
-
-</p>
+<h3 align="center">running tests</h3>
 
 ```bash
 pytest memster/tests/
 ```
 
-<p align="center">
-
-## license
-
-</p>
+<h2 align="center">license</h2>
 
 memster is licensed under the mit license. see the `license` file for details.
 
-<p align="center">
-
-## acknowledgments
-
-</p>
+<h2 align="center">acknowledgments</h2>
 
 - the longmemeval dataset and benchmark.
 - the sentence-transformers and flagembedding libraries for embedding models.
