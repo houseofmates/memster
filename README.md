@@ -233,7 +233,7 @@ pytest memster/tests/
 
 <h2 align="center">license</h2>
 
-memster is licensed under the mit license. see the `license` file for details.
+[mates license](license)
 
 <h2 align="center">acknowledgments</h2>
 
