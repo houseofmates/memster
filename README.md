@@ -133,13 +133,6 @@ python benchmarks/run_v6.py
 python memster_mcp_server.py
 ```
 
-<h2 align="center">project cleanup</h2>
-
-- **pieces mcp**: removed entirely. the old memster mcp server no longer references pieces or attempts to sync with it.
-- **sqlite**: removed entirely. all storage goes through postgresql via `memster.hybrid_retrieval`.
-- **legacy modules**: `memster_v4_features.py`, `memster_gbrain.py`, `memster_beads.py`, `memster_phase2.py`, and `memster_spaced_repetition.py` have been deleted. their functionality was either consolidated into `memster.hybrid_retrieval` or was dead code referencing sqlite/pieces.
-- **benchmark claims**: readme and benchmarks.md now report verified numbers (95.20%) and mark higher scores as "target/pending".
-
 <h2 align="center">license</h2>
 
 [mates license](license)
