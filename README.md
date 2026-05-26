@@ -6,7 +6,7 @@ memster is a local-first long-term memory system for ai agents, designed to prov
 
 - **local-first by default**: works out-of-the-box with no api keys or external services required.
 - **embedding backend switcher**: easily switch between local cpu-friendly embeddings and nvidia nim embeddings.
-- **high recall**: achieves **95.20% recall@5** on longmemeval (verified). experimental config targeting ≥96.2% with nim.
+- **high recall**: achieves **95.20% recall@5** on longmemeval.
 - **low latency**: lightweight reranker brings retrieval latency under 1 second p95.
 - **advanced retrieval**: hybrid fusion of semantic (dense), bm25 (sparse), entity, and temporal signals with configurable weights.
 - **query expansion**: uses wordnet synonyms to improve recall on ambiguous queries.
