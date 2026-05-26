@@ -27,10 +27,6 @@ venv/
 .vscode/
 .idea/
 
-# Benchmark datasets (large, don't commit)
-benchmarks/LongMemEval_dataset/
-benchmarks/LoCoMo_dataset/
-
 # Temporary / backup
 *~
 *.bak
@@ -40,3 +36,4 @@ benchmarks/LoCoMo_dataset/
 .pytest_cache/
 .coverage
 htmlcov/
+models/

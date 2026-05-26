@@ -81,11 +81,10 @@ def session_to_text(turns):
 
 
 def batch_store_all(dataset):
-    """Store all LongMemEval sessions in the database as chunked memory beads."""
+    """Store all LongMemEval sessions in the database (full sessions, not chunked)."""
     conn = get_conn()
     cur = conn.cursor()
 
-    # Check if chunked data already exists
     cur.execute("SELECT COUNT(*) FROM memories WHERE source = 'longmemeval'")
     existing = cur.fetchone()["count"]
     if existing > 0:
@@ -99,39 +98,38 @@ def batch_store_all(dataset):
         qid = question["question_id"]
         qtype = question["question_type"]
         for si, session in enumerate(question["haystack_sessions"]):
-            # Chunk the session into smaller pieces
-            chunks = chunk_session(session, chunk_size=4, overlap=2)
-            for ci, chunk in enumerate(chunks):
-                session_text = session_to_text(chunk)
-                if len(session_text) < 10:
-                    continue
-                t_event = question.get("haystack_dates", [now])[
-                    min(si, len(question.get("haystack_dates", [now])) - 1)
-                ]
-                # Category includes chunk index so we can still identify the original session
-                category_tag = f"{qid}|{qtype}|{si}|chunk{ci}"
-                try:
-                    cur.execute(
-                        """INSERT INTO memories (content, network_type, source, t_event, t_recorded, category, tier, importance)
-                           VALUES (%s, 'experience', 'longmemeval', %s, %s, %s, 'L3', 0.7)""",
-                        (session_text, t_event, now, category_tag),
-                    )
-                    total += 1
-                except Exception:
-                    pass
+            session_text = "\n".join(
+                f"[{t.get('role','')}]: {t.get('content','')}"
+                for t in session
+            ).strip()
+            if len(session_text) < 10:
+                continue
+            t_event = question.get("haystack_dates", [now])[
+                min(si, len(question.get("haystack_dates", [now])) - 1)
+            ]
+            category_tag = f"{qid}|{qtype}|{si}"
+            try:
+                cur.execute(
+                    """INSERT INTO memories (content, network_type, source, t_event, t_recorded, category, tier, importance)
+                       VALUES (%s, 'experience', 'longmemeval', %s, %s, %s, 'L3', 0.7)""",
+                    (session_text, t_event, now, category_tag),
+                )
+                total += 1
+            except Exception:
+                pass
     conn.commit()
     conn.close()
-    print(f"  Stored {total} chunked memories")
+    print(f"  Stored {total} full sessions")
     return total
 
 
 def build_evidence(dataset):
     """Build evidence mapping: category_tag -> has_answer (bool).
-    Works with chunked categories: {qid}|{qtype}|{si}|chunk{ci}
+    Works with both chunked ({qid}|{qtype}|{si}|chunk{ci}) and
+    full-session ({qid}|{qtype}|{si}) category formats.
     """
     evidence = {}
-    # Track which sessions have answers (for counting unique sessions)
-    session_evidence = {}  # {qid}|{qtype}|{si} -> bool
+    session_evidence = {}
     for q in dataset:
         qid = q["question_id"]
         qtype = q["question_type"]
@@ -139,10 +137,7 @@ def build_evidence(dataset):
             has_ev = any(turn.get("has_answer", False) for turn in session)
             session_key = f"{qid}|{qtype}|{si}"
             session_evidence[session_key] = has_ev
-            # Create evidence entries for all chunks of this session
-            chunks = chunk_session(session, chunk_size=4, overlap=2)
-            for ci in range(len(chunks)):
-                evidence[f"{qid}|{qtype}|{si}|chunk{ci}"] = has_ev
+            evidence[session_key] = has_ev
     return evidence, session_evidence
 
 
@@ -363,9 +358,7 @@ def main():
     print("\n[3/5] Building evidence map...")
     evidence, session_evidence = build_evidence(dataset)
     total_unique_sessions = sum(1 for v in session_evidence.values() if v)
-    total_evidence_chunks = sum(1 for v in evidence.values() if v)
     print(f"  Total unique evidence sessions: {total_unique_sessions}")
-    print(f"  Total evidence chunks (with overlap): {total_evidence_chunks}")
 
     # Initialize engine
     print("\n[4/5] Initializing HybridRetrievalEngine...")

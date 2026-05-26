@@ -55,7 +55,7 @@ LOCAL_EMBEDDING_MODEL = os.environ.get(
 )
 
 # NIM API config
-NIM_API_KEY = os.environ.get("NVIDIA_API_KEY", "") or os.environ.get("OPENROUTER_API_KEY", "")
+NIM_API_KEY = os.environ.get("OPENROUTER_API_KEY", "") or os.environ.get("NVIDIA_API_KEY", "")
 NIM_MODEL = "nvidia/llama-nemotron-embed-vl-1b-v2"
 NIM_BASE_URL = "https://openrouter.ai/api/v1/embeddings"
 
@@ -275,7 +275,7 @@ def _get_conn_internal():
 
 def _vector_search_sql(query_embedding: List[float], limit: int = 100, threshold: float = 0.1) -> Dict[int, float]:
     """Brute-force cosine similarity search via local_embedding jsonb column.
-    Uses numpy for batch computation.
+    Uses numpy for batch computation. Filters to match query embedding dimension.
     """
     conn = _get_conn_internal()
     cursor = conn.cursor()
@@ -293,12 +293,12 @@ def _vector_search_sql(query_embedding: List[float], limit: int = 100, threshold
             return {}
 
         import numpy as np
+        query_dim = len(query_embedding)
 
         query_np = np.array(query_embedding, dtype=np.float32)
         query_norm = np.linalg.norm(query_np)
         if query_norm == 0:
             return {}
-
         query_np = query_np / query_norm
 
         ids = []
@@ -311,6 +311,9 @@ def _vector_search_sql(query_embedding: List[float], limit: int = 100, threshold
             else:
                 emb = emb_json
             if emb is None:
+                continue
+            # Filter to only embeddings matching the query dimension
+            if len(emb) != query_dim:
                 continue
             ids.append(mem_id)
             vectors.append(emb)
@@ -414,7 +417,7 @@ class HybridRetrievalEngine:
                 self.embeddings_available = False
                 logger.error("No embedding backend available")
 
-        # Query expansion settings
+        # Query expansion settings (disabled by default — WordNet adds too much noise)
         self.use_query_expansion = os.environ.get("USE_QUERY_EXPANSION", "false").lower() == "true"
         self.query_expansion_max_synonyms = int(os.environ.get("QUERY_EXPANSION_MAX_SYNONYMS", "2"))
 
@@ -494,18 +497,20 @@ class HybridRetrievalEngine:
 
         # 2. Parallel signal extraction (using expanded query)
         signals = {}
+        # V6-style: large candidate pools per signal for high recall
+        signal_limit = int(os.environ.get("SIGNAL_CANDIDATE_LIMIT", "500"))
 
         if semantic_weight > 0 and self.embeddings_available:
-            signals["semantic"] = self._semantic_search(expanded_query, top_k * 2)
+            signals["semantic"] = self._semantic_search(expanded_query, signal_limit)
 
         if bm25_weight > 0:
-            signals["bm25"] = self._bm25_search(expanded_query, top_k * 2)
+            signals["bm25"] = self._bm25_search(expanded_query, signal_limit)
 
         if entity_weight > 0:
-            signals["entity"] = self._entity_search(expanded_query, top_k * 2)
+            signals["entity"] = self._entity_search(expanded_query, signal_limit)
 
         if temporal_weight > 0:
-            signals["temporal"] = self._temporal_boost(top_k * 2)
+            signals["temporal"] = self._temporal_boost(signal_limit)
 
         # If no signals at all, fall back to simple LIKE search
         if not signals:
@@ -555,24 +560,51 @@ class HybridRetrievalEngine:
     # ── query expansion ───────────────────────────────────────────
 
     def _expand_query(self, query: str) -> str:
-        """Expand query with WordNet synonyms for content words."""
+        """Expand query with WordNet synonyms for content words (nouns, verbs).
+        Skips stopwords, short words, and only adds common, meaningful synonyms.
+        """
         if not self.wordnet_available:
             return query
 
         tokens = re.findall(r"\w+", query.lower())
-        expanded = set(tokens)
+        expanded = set()
+
+        # Extended stopwords list
+        extra_stops = {
+            "which", "what", "when", "where", "why", "how", "did", "does",
+            "do", "was", "were", "is", "are", "am", "have", "has", "had",
+            "been", "being", "will", "would", "could", "should", "can",
+            "may", "might", "shall", "the", "a", "an", "of", "in", "on",
+            "at", "to", "for", "with", "by", "from", "up", "about", "into",
+            "over", "after", "before", "between", "under", "again", "further",
+            "then", "once", "here", "there", "all", "each", "every", "both",
+            "few", "more", "most", "other", "some", "such", "no", "nor",
+            "not", "only", "own", "same", "so", "than", "too", "very",
+            "just", "because", "also", "any", "i", "me", "my", "myself",
+            "we", "our", "ours", "you", "your", "yours", "he", "him",
+            "his", "she", "her", "hers", "it", "its", "they", "them",
+            "their", "theirs", "this", "that", "these", "those",
+        }
 
         for token in tokens:
-            if token in self.stop_words or len(token) < 2:
+            if token in self.stop_words or token in extra_stops or len(token) < 3:
+                expanded.add(token)
                 continue
+
             synsets = self.wordnet.synsets(token)
             added = 0
             for syn in synsets:
                 if added >= self.query_expansion_max_synonyms:
                     break
+                # Only expand nouns (n) and verbs (v)
+                pos = syn.pos()
+                if pos not in ('n', 'v'):
+                    continue
                 for lemma in syn.lemmas():
                     term = lemma.name().replace("_", " ")
-                    if term.isalpha() and len(term) > 1 and term not in self.stop_words:
+                    if (term.isalpha() and len(term) > 2 and
+                        term not in self.stop_words and term not in extra_stops and
+                        term != token and term not in expanded):
                         expanded.add(term)
                         added += 1
                         if added >= self.query_expansion_max_synonyms:
