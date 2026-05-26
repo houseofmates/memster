@@ -41,13 +41,13 @@ print('embeddings available:', engine.embeddings_available)
 
 <h2 align="center">configuration</h2>
 
-### embedding backend
+<h3 align="center">embedding backend</h3>
 
 - `EMBEDDING_BACKEND`: set to `"local"` (default) or `"nim"`.
   - `local`: uses a small, efficient embedding model that runs on cpu (`BAAI/bge-small-en-v1.5`, 384-dim).
   - `nim`: uses the nvidia nim api with `nvidia/llama-nemotron-embed-vl-1b-v2` (2048-dim). requires `NVIDIA_API_KEY`.
 
-### retrieval weights
+<h3 align="center">retrieval weights</h3>
 
 | variable | default | description |
 |----------|---------|-------------|
@@ -56,7 +56,7 @@ print('embeddings available:', engine.embeddings_available)
 | `WEIGHT_ENT` | 5.0 | Entity signal weight |
 | `WEIGHT_TEMP` | 1.0 | Temporal signal weight |
 
-### advanced features
+<h3 align="center">advanced features</h3>
 
 | variable | default | description |
 |----------|---------|-------------|
@@ -66,7 +66,8 @@ print('embeddings available:', engine.embeddings_available)
 | `QUERY_EXPANSION_MAX_SYNONYMS` | 2 | Max synonyms per word |
 | `TWO_STAGE_RERANKER_CANDIDATES_MULTIPLIER` | 5 | Candidates to rerank (× top_k) |
 
-### example `.env` for local-first (default)
+<h3 align="center">example `.env` for local-first (default)</h3>
+
 
 ```bash
 EMBEDDING_BACKEND=local
@@ -77,7 +78,7 @@ WEIGHT_TEMP=1.0
 FUSION_METHOD=weighted
 ```
 
-### example `.env` for nvidia nim (personal setup)
+<h3 align="center">example `.env` for nvidia nim (personal setup)</h3>
 
 ```bash
 EMBEDDING_BACKEND=nim
