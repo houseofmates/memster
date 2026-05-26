@@ -1,0 +1,22 @@
+{
+  "benchmark": "LongMemEval (oracle) — Partial (250/500 questions)",
+  "timestamp": "2026-05-25 (interrupted at 250/500)",
+  "total_questions": 500,
+  "questions_completed": 250,
+  "total_evidence_sessions": 854,
+  "recall_at_5_partial": 0.6152,
+  "found_partial": 299,
+  "total_partial": 486,
+  "avg_latency_s": 5.785,
+  "configuration": {
+    "embedding_backend": "nim",
+    "model": "nvidia/llama-nemotron-embed-vl-1b-v2",
+    "reranker": "mixedbread-ai/mxbai-rerank-xsmall-v1",
+    "candidate_limit": 500,
+    "weights": {"semantic": 1.5, "bm25": 1.0, "entity": 5.0, "temporal": 1.0},
+    "fusion": "weighted",
+    "query_expansion": false,
+    "two_stage_reranker": false
+  },
+  "note": "Benchmark was interrupted. Cross-encoder reranker required for 95%+ recall. Lightweight mxbai reranker achieves ~62% on this dataset."
+}
