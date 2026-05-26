@@ -142,7 +142,7 @@ python memster_mcp_server.py
 
 <h2 align="center">license</h2>
 
-[mit license](license)
+[mates license](license)
 
 <h2 align="center">acknowledgments</h2>
 
