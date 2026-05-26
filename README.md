@@ -11,7 +11,7 @@ memster is a local-first long-term memory system for ai agents, designed to prov
 - **advanced retrieval**: hybrid fusion of semantic (dense), bm25 (sparse), entity, and temporal signals with configurable weights.
 - **query expansion**: uses wordnet synonyms to improve recall on ambiguous queries.
 - **two-stage reranking**: fast hybrid retrieval top-n followed by lightweight reranker for final ranking.
-- **postgresql only**: no sqlite dependencies. no pieces mcp. clean, modern stack.
+- **postgresql only**: simple, clean, modern stack.
 - **memster as a memory provider**: integrates seamlessly with hermes agent via mcp.
 
 <h2 align="center">quick start</h2>
