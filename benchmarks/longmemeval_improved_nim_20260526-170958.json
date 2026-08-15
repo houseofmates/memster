@@ -1,0 +1,37 @@
+{
+  "benchmark": "LongMemEval (oracle) \u2014 Improved Engine v2.0",
+  "timestamp": "20260526-170958",
+  "total_questions": 500,
+  "total_evidence_sessions": 854,
+  "top_k": 50,
+  "recall_at_k": 0.9122,
+  "avg_latency_s": 1.133,
+  "p95_latency_s": 1.207,
+  "backend": "nim",
+  "seeds": [
+    42
+  ],
+  "individual_results": [
+    {
+      "seed": 42,
+      "recall_at_k": 0.9121779859484778,
+      "avg_latency_s": 1.133,
+      "p95_latency_s": 1.207
+    }
+  ],
+  "configuration": {
+    "embedding_backend": "nim",
+    "use_lightweight_reranker": false,
+    "use_query_expansion": false,
+    "use_two_stage_reranker": false,
+    "fusion_method": "weighted",
+    "weights": {
+      "semantic": 1.5,
+      "bm25": 1.0,
+      "entity": 5.0,
+      "temporal": 1.0
+    },
+    "query_expansion_max_synonyms": 2,
+    "two_stage_reranker_candidates_multiplier": 5
+  }
+}

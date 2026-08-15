@@ -103,7 +103,7 @@ Note: Ablation numbers are approximate from multiple runs; the full system is sy
 3. Run the benchmark script with the winning configuration:
 
 ```bash
-cd /home/house/memster
+cd /home/house/projects/memster
 export OPENROUTER_API_KEY="your-key-here"
 SEM_LIMIT=500 BM_LIMIT=500 ENT_LIMIT=500 TEMP_LIMIT=500 RRF_K=300 \
 WEIGHT_SEM=1.5 WEIGHT_BM25=1.0 WEIGHT_ENT=5.0 WEIGHT_TEMP=1.0 \

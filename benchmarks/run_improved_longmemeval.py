@@ -115,6 +115,25 @@ def batch_store_all(dataset):
                     (session_text, t_event, now, category_tag),
                 )
                 total += 1
+                memory_id = cur.lastrowid
+
+                # Populate entity data for entity-based boosting
+                try:
+                    from memster.entity_extraction import extract_entities_list
+                    entity_list = extract_entities_list(session_text)
+                    entity_data = {}
+                    for ent in entity_list:
+                        t = ent.get("type", "other")
+                        if t not in entity_data:
+                            entity_data[t] = []
+                        entity_data[t].append(ent["name"])
+                    if entity_data:
+                        cur.execute(
+                            "INSERT INTO memory_entity_data (memory_id, entities) VALUES (%s, %s) ON CONFLICT (memory_id) DO UPDATE SET entities = EXCLUDED.entities",
+                            (memory_id, json.dumps(entity_data)),
+                        )
+                except Exception:
+                    pass
             except Exception:
                 pass
     conn.commit()

@@ -79,10 +79,11 @@ NIM_API_KEY = _get_nim_api_key()
 NIM_MODEL = "nvidia/nv-embed-v1"
 NIM_BASE_URL = "https://integrate.api.nvidia.com/v1/embeddings"
 
+
 # ── NIM embedding helpers (direct HTTP, no external package) ──────
 
 def _nim_embed(text: str, retries: int = 3, input_type: str = "query") -> Optional[List[float]]:
-    """Embed via NVIDIA NIM API. Returns 4096-dim vector or None.
+    """Embed via NVIDIA NIM API. Returns 2048-dim vector or None.
 
     input_type: "query" or "passage" — must be SAME for both storage and retrieval.
     """
@@ -104,144 +105,22 @@ def _nim_embed(text: str, retries: int = 3, input_type: str = "query") -> Option
                     "Content-Type": "application/json",
                 },
             )
-            with urllib.request.urlopen(req, timeout=30) as r:
+            with urllib.request.urlopen(req, timeout=60) as r:
                 data = json.loads(r.read())
                 if data.get("data") and len(data["data"]) > 0:
                     return data["data"][0]["embedding"]
-        except urllib.error.HTTPError as e:
-            if e.code == 429:  # Rate limit
-                # Exponential backoff: 2^attempt seconds, plus jitter
-                wait_time = (2 ** attempt) + random.uniform(0, 1)
-                logger.warning(f"NIM embed rate limited (429), retrying in {wait_time:.1f}s...")
-                time.sleep(wait_time)
-                if attempt == retries - 1:
-                    logger.error("NIM embed failed after retries due to rate limit")
-                    return None
-                continue
-            else:
-                logger.warning(f"NIM embed failed: {e}")
-                if attempt < retries - 1:
-                    time.sleep(2 ** attempt)
-                else:
-                    return None
         except Exception as exc:
             if attempt < retries - 1:
                 time.sleep(2 ** attempt)
             else:
                 logger.warning(f"NIM embed failed: {exc}")
-                return None
     return None
+
 
 def _nim_embed_batch(texts: List[str], input_type: str = "query") -> Optional[List[List[float]]]:
     """Batch embed via NVIDIA NIM."""
     if not NIM_API_KEY:
         return None
-    texts = [t[:6000] for t in texts]
-    try:
-        payload = json.dumps({
-            "model": NIM_MODEL,
-            "input": texts,
-            "input_type": input_type,
-        }).encode()
-        req = urllib.request.Request(
-            NIM_BASE_URL,
-            data=payload,
-            headers={
-                "Authorization": f"Bearer {NIM_API_KEY}",
-                "Content-Type": "application/json",
-            },
-        )
-        with urllib.request.urlopen(req, timeout=120) as r:
-            data = json.loads(r.read())
-            if data.get("data"):
-                result = [d["embedding"] for d in data["data"]]
-                return result
-    except Exception as exc:
-        logger.warning(f"NIM batch embed failed: {exc}")
-    return None
-NIM_MODEL = "nvidia/nv-embed-v1"
-NIM_BASE_URL = "https://integrate.api.nvidia.com/v1/embeddings"
-
-# ── NIM embedding helpers (direct HTTP, no external package) ──────
-
-def _nim_embed(text: str, retries: int = 3, input_type: str = "query") -> Optional[List[float]]:
-    """Embed via NVIDIA NIM API. Returns 4096-dim vector or None.
-
-    input_type: "query" or "passage" — must be SAME for both storage and retrieval.
-    """
-    if not NIM_API_KEY:
-        return None
-    text = text[:6000]
-    for attempt in range(retries):
-        try:
-            payload = json.dumps({
-                "model": NIM_MODEL,
-                "input": [text],
-                "input_type": input_type,
-            }).encode()
-            req = urllib.request.Request(
-                NIM_BASE_URL,
-                data=payload,
-                headers={
-                    "Authorization": f"Bearer {NIM_API_KEY}",
-                    "Content-Type": "application/json",
-                },
-            )
-            with urllib.request.urlopen(req, timeout=30) as r:
-                data = json.loads(r.read())
-                if data.get("data") and len(data["data"]) > 0:
-                    return data["data"][0]["embedding"]
-        except urllib.error.HTTPError as e:
-            if e.code == 429:  # Rate limit
-                # Exponential backoff: 2^attempt seconds, plus jitter
-                wait_time = (2 ** attempt) + random.uniform(0, 1)
-                logger.warning(f"NIM embed rate limited (429), retrying in {wait_time:.1f}s...")
-                time.sleep(wait_time)
-                if attempt == retries - 1:
-                    logger.error("NIM embed failed after retries due to rate limit")
-                    return None
-                continue
-            else:
-                logger.warning(f"NIM embed failed: {e}")
-                if attempt < retries - 1:
-                    time.sleep(2 ** attempt)
-                else:
-                    return None
-        except Exception as exc:
-            if attempt < retries - 1:
-                time.sleep(2 ** attempt)
-            else:
-                logger.warning(f"NIM embed failed: {exc}")
-                return None
-    return None
-
-def _nim_embed_batch(texts: List[str], input_type: str = "query") -> Optional[List[List[float]]]:
-    """Batch embed via NVIDIA NIM."""
-    if not NIM_API_KEY:
-        return None
-    texts = [t[:6000] for t in texts]
-    try:
-        payload = json.dumps({
-            "model": NIM_MODEL,
-            "input": texts,
-            "input_type": input_type,
-        }).encode()
-        req = urllib.request.Request(
-            NIM_BASE_URL,
-            data=payload,
-            headers={
-                "Authorization": f"Bearer {NIM_API_KEY}",
-                "Content-Type": "application/json",
-            },
-        )
-        with urllib.request.urlopen(req, timeout=120) as r:
-            data = json.loads(r.read())
-            if data.get("data"):
-                result = [d["embedding"] for d in data["data"]]
-                return result
-    except Exception as exc:
-        logger.warning(f"NIM batch embed failed: {exc}")
-    return None
     texts = [t[:6000] for t in texts]
     try:
         payload = json.dumps({
@@ -380,8 +259,7 @@ def is_embedding_available() -> bool:
 def get_embedding_dim() -> int:
     """Return embedding dimension for the configured backend."""
     if EMBEDDING_BACKEND == "nim":
-        # nvidia/nv-embed-v1 produces 4096-dim vectors
-        return 4096
+        return 4096  # nvidia/nv-embed-v1 produces 4096-dim vectors
     return _get_local_dim()
 
 
@@ -423,17 +301,17 @@ def _get_conn_internal():
     return conn
 
 
-def _vector_search_sql(query_embedding: List[float], limit: int = 100, threshold: float = 0.1, embedding_column: str = "local_embedding") -> Dict[int, float]:
-    """Brute-force cosine similarity search via the specified embedding column.
+def _vector_search_sql(query_embedding: List[float], limit: int = 100, threshold: float = 0.1) -> Dict[int, float]:
+    """Brute-force cosine similarity search via local_embedding jsonb column.
     Uses numpy for batch computation. Filters to match query embedding dimension.
     """
     conn = _get_conn_internal()
     cursor = conn.cursor()
     try:
-        cursor.execute(f"""
-            SELECT id, {embedding_column}
+        cursor.execute("""
+            SELECT id, local_embedding
             FROM memories
-            WHERE {embedding_column} IS NOT NULL
+            WHERE local_embedding IS NOT NULL
             ORDER BY t_event DESC
             LIMIT 5000
         """)
@@ -455,7 +333,7 @@ def _vector_search_sql(query_embedding: List[float], limit: int = 100, threshold
         vectors = []
         for row in rows:
             mem_id = row["id"]
-            emb_json = row[embedding_column]
+            emb_json = row["local_embedding"]
             if isinstance(emb_json, str):
                 emb = json.loads(emb_json)
             else:
@@ -527,12 +405,7 @@ class HybridRetrievalEngine:
 
         # Determine embedding backend
         self.embedding_backend = os.environ.get("EMBEDDING_BACKEND", "local").lower()
-        # Set the embedding column to use for vector search
-        if self.embedding_backend == "nim":
-            self.embedding_column = "embedding"
-        else:
-            self.embedding_column = "local_embedding"
-
+        
         # Initialize backend-specific attributes
         self.local_embedding_model = None  # kept for compatibility, not used
         self.local_embeddings_available = False
