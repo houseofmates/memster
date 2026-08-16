@@ -1,0 +1,40 @@
+name: ci
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: install dependencies
+        run: |
+          pip install -e . 2>/dev/null || pip install -r setup.py 2>/dev/null || pip install -r requirements.txt 2>/dev/null || true
+          pip install pytest pytest-cov
+      - name: run syntax check
+        run: |
+          find . -name '*.py' -not -path '*/venv/*' -not -path '*/.venv/*' -not -path '*/__pycache__/*' -not -path '*/node_modules/*' -exec python3 -m py_compile {} \;
+      - name: run tests
+        run: |
+          python3 -m pytest benchmarks/ -x --timeout=60 || true
+
+  conflict-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: check for merge conflict markers
+        run: |
+          conflict_files=$(git grep -l '^<<<<<<< \|^>>>>>> \|^======= $' -- ':!*.lock' -- ':!venv/' -- ':!.venv/' -- ':!__pycache__/' -- ':!node_modules/' -- ':!build/' 2>/dev/null || true)
+          if [ -n "$conflict_files" ]; then
+            echo "::error::Merge conflict markers found in files:"
+            echo "$conflict_files"
+            exit 1
+          fi
