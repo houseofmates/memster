@@ -162,7 +162,7 @@ def _nim_embed_batch(texts: List[str], input_type: str = "query") -> Optional[Li
     return None
 
 
-# ── Local embedding helpers# ── Local embedding helpers ───────────────────────────────────────
+# ── Local embedding helpers ───────────────────────────────────────
 
 _LOCAL_MODEL_INSTANCE = None
 
