@@ -23,6 +23,7 @@ import json
 import logging
 import math
 import os
+import random
 import re
 import time
 import urllib.request
@@ -71,7 +72,7 @@ def _get_nim_api_key() -> str:
         with open(hermes_env) as f:
             for line in f:
                 line = line.strip()
-                if line.startswith("NVIDIA_API_KEY="):
+                if line.startswith("NVIDIA_API_KEY=")
                     return line.split("=", 1)[1]
     return ""
 
