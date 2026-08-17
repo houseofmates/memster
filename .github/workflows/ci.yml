@@ -10,11 +10,10 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-          cache: pip
       - name: install dependencies
         run: |
           pip install -e . 2>/dev/null || pip install -r setup.py 2>/dev/null || pip install -r requirements.txt 2>/dev/null || true
@@ -29,7 +28,7 @@ jobs:
   conflict-check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: check for merge conflict markers
         run: |
           conflict_files=$(git grep -l '^<<<<<<< \|^>>>>>> \|^======= $' -- ':!*.lock' -- ':!venv/' -- ':!.venv/' -- ':!__pycache__/' -- ':!node_modules/' -- ':!build/' 2>/dev/null || true)
