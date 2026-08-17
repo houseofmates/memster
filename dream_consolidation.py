@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 # Default memster DB
-DB_PATH = Path.home() / "memster" / "memster_unified.db"
+DB_PATH = Path.home() / "projects" / "memster" / "memster_unified.db"
 
 def sleep_consolidate(db_path=None, batch_size=100):
     """Consolidate old memories with access-weighted decay."""

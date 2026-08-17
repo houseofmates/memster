@@ -174,7 +174,7 @@ def _get_local_model():
 
     try:
         from sentence_transformers import SentenceTransformer
-        models_dir = os.path.expanduser("~/memster/models")
+        models_dir = os.path.expanduser("~/projects/memster/models")
         os.makedirs(models_dir, exist_ok=True)
         logger.info(f"Loading local embedding model: {LOCAL_EMBEDDING_MODEL}")
         t0 = time.time()
