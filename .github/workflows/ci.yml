@@ -16,7 +16,7 @@ jobs:
           python-version: "3.12"
       - name: install dependencies
         run: |
-          pip install -e . 2>/dev/null || pip install -r setup.py 2>/dev/null || pip install -r requirements.txt 2>/dev/null || true
+          pip install -e . 2>/dev/null || pip install . 2>/dev/null || pip install -r requirements.txt 2>/dev/null || true
           pip install pytest pytest-cov
       - name: run syntax check
         run: |
